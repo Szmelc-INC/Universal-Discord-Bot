@@ -2,6 +2,8 @@ import discord
 from discord.ext import commands
 import requests
 
+APIKEY = 'YOUR-API-KEY'
+
 class CryptoPriceCog(commands.Cog):
     def __init__(self, bot, api_key):
         self.bot = bot
@@ -50,6 +52,6 @@ class CryptoPriceCog(commands.Cog):
             return "Error: Could not fetch top 10 cryptocurrencies."
 
 async def setup(bot):
-    api_key = '8af4164f-ccf2-4463-86f7-aeaf2d6f7f1d'  # Replace with your CoinMarketCap API key
+    api_key = APIKEY  # Replace with your CoinMarketCap API key
     await bot.add_cog(CryptoPriceCog(bot, api_key))
 
