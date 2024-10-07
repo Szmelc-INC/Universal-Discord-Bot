@@ -1,16 +1,16 @@
 {
-  "sx77": {
+  "bot 1": {
     "token": "TOKEN",
     "command_prefix": "!",
     "modules_folder": "modules",
     "enabled_modules": [],
     "disabled_modules": []
   },
-  "WypierBOT": {
+  "bot 2": {
     "token": "TOKEN",
     "command_prefix": "!",
     "modules_folder": "modules",
     "enabled_modules": [],
-    "disabled_modules": ["kutas"]
+    "disabled_modules": ["examplemodule"]
   }
 }
