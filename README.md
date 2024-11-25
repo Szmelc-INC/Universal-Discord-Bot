@@ -18,12 +18,15 @@
 
 #### **ADMIN COMMANDS**
 ```
-shell        - Access server's shell (Poorman's terminal over Discord)
-upload       - Upload local file from server to Discord
-dm           - Send direct message from bot to specified user
-listroles    - List all roles specified user has
-addrole      - Add a role to user
-removerole   - Remove role from user
+shell          - Access server's shell (Poorman's terminal over Discord)
+upload         - Upload local file from server to Discord
+dm             - Send direct message from bot to specified user
+listroles      - List all roles specified user has
+addrole        - Add a role to user
+removerole     - Remove role from user
+startpresence  - Start rich presence
+stoppresence   - Stop rich presence
+updatepresence - Update rich presence
 ```
 
 #### **USER COMMANDS**
@@ -154,6 +157,12 @@ bomba
 boner
 ```
 
+> `rich_presence.py`
+```bash
+startpresence
+stoppresence
+updatepresence <field> <value>
+```
 </details>
 
 ---
