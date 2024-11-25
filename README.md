@@ -1,11 +1,12 @@
 
 # **Universal-Discord-Bot**  
-> A modular approach to Discord bots by Szmelc.INC  
-> Simple to setup, configure, use, and modify!
+> **A modular approach to Discord bots by Szmelc.INC** \
+> **Modularity is key!, each module is standalone .py script in modules folder**  \
+![image](https://github.com/user-attachments/assets/7f3494c0-581f-4398-b53a-11fce9e5695e)
 
 ---
 
-## 📖 **Manual**  
+# 📖 **Manual**  
 > **Click to expand each category...**  
 > `Commands` contains a compact list with descriptions.  
 > For detailed information about individual commands and their usage, refer to the `Modules` section.
@@ -161,14 +162,14 @@ boner
 <summary><h3>⚙️Setup & Config</h3></summary>
 
 # Installation & Setup
-> **Download dependencies with:**
-```bash
-python3 -m pip install -r requirements.txt
-```
 > **Download source code with:**
 ```bash
 git clone https://github.com/Szmelc-INC/Universal-Discord-Bot
 cd Universal-Discord-Bot
+```
+> **Install dependencies with:**
+```bash
+python3 -m pip install -r requirements.txt
 ```
 > **Now set your details like token, in `config.json`, when done, start the bot with:**
 ```bash
