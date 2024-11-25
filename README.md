@@ -42,6 +42,15 @@ crypto       - Fetch recent cryptocurrency prices
 losowe       - Fetch random meme from jbzd.com.pl/losowe
 game         - Start Tictactoe game between two users
 ```
+#### **VC [MUSIC]**
+```
+join    - Join user's voice channel
+leave   - Leave voice channel
+play    - Play song, or add to queue
+stop    - Stop music
+skip    - Skip current song
+queue   - List current queue
+```
 
 #### **MISC**
 ```
@@ -163,6 +172,25 @@ startpresence
 stoppresence
 updatepresence <field> <value>
 ```
+
+> `responses.py`
+- Gives % for bot to reply to chat messages, see [misc/responses.txt] \
+- Example responses.txt format:
+```bash
+keyword 1:reponse 1, response 2
+keyword 2:response x, response y
+```
+
+> `music_vc.py`
+```bash
+join
+leave
+play <URL>
+stop
+skip
+queue
+```
+
 </details>
 
 ---
