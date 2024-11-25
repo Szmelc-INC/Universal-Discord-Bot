@@ -27,6 +27,7 @@ removerole     - Remove role from user
 startpresence  - Start rich presence
 stoppresence   - Stop rich presence
 updatepresence - Update rich presence
+rm             - Advanced message removal
 ```
 
 #### **USER COMMANDS**
@@ -189,6 +190,16 @@ play <URL>
 stop
 skip
 queue
+```
+
+> `shredder.py` \
+> `[time]` uses format like: `5s`, `10m`, `1h` etc \
+> add `--backup` flag to first backup and send to user issuing command, before deletion.
+```bash
+rm user [time] @username
+rm user [time] @username --backup
+rm channel [time]
+rm global [time]
 ```
 
 </details>
