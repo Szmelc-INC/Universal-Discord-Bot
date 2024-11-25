@@ -266,3 +266,14 @@ keyword:response 1, response 2
 
 </details>
 
+---
+
+<details>
+<summary><h4>Misc</h4></summary>
+  
+> *Want to contribute? Feel free to reach out via Email, GitHub or Discord!*
+
+> **Projects based on Universal-Discord-Bot <3**
+- [e621 Discord Bot](https://github.com/AngryDraconequus/e621-discord-bot)
+
+</details>
