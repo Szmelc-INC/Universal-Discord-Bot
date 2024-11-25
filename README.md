@@ -220,7 +220,7 @@ python3 main.py <bot_name>
 nohup python3 main.py <bot_name> &
 ```
 
-### Config.json
+### config.json
 > Configure multiple bots by specifying:  
 > preferred name, token, prefix, path to modules, and optionally either white or blacklisted modules for each bot. \
 > <bot_name> parameter is just for you to tell script which one you mean, tho try to avoid very special characters and spaces, \
@@ -242,6 +242,15 @@ nohup python3 main.py <bot_name> &
     "disabled_modules": ["examplemodule"]
   }
 }
+```
+---
+### responses.txt
+> (One keyword, can have unlimited responses, which will be random picked each time it runs) \
+> `:` separates keyword from responses, responses are separated by `,` \
+> Set reply % chance in `responses.py` script.
+> Configure trigger words & responses in such format:
+```bash
+keyword:response 1, response 2
 ```
 
 </details>
