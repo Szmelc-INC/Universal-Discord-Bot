@@ -5,7 +5,7 @@ import random
 class KeywordResponder(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.responses = self.load_responses_from_file("responses.txt")
+        self.responses = self.load_responses_from_file("misc/responses.txt") # Configure responses list first
 
     def load_responses_from_file(self, filepath):
         responses = {}
