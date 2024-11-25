@@ -1,5 +1,5 @@
 
-# **Universal-Discord-Bot**  
+# **Universal-Discord-Bot**
 > **A modular approach to Discord bots by Szmelc.INC** \
 > **Modularity is key!, each module is standalone .py script in modules folder**  \
 ![image](https://github.com/user-attachments/assets/7f3494c0-581f-4398-b53a-11fce9e5695e)
@@ -276,4 +276,6 @@ keyword:response 1, response 2
 > **Projects based on Universal-Discord-Bot <3**
 - [e621 Discord Bot](https://github.com/AngryDraconequus/e621-discord-bot)
 
+
+***"Not as good as other bots, but good enough!"***
 </details>
