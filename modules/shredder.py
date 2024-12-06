@@ -11,44 +11,51 @@ class CleanupModule(commands.Cog):
         self.bot = bot
 
     async def has_required_role(ctx):
-        required_role_id = 1180412519190364202  # Replace with your Admin role ID
-        has_role = any(role.id == required_role_id for role in ctx.author.roles)
+        required_role_ids = [940433614326341733, 1180412519190364202, 1308222346338893834, 1308230046632251403]  # Replace with your Admin role IDs
+        has_role = any(role.id in required_role_ids for role in ctx.author.roles)
         return has_role
 
     @commands.command(name='rm')
     @commands.check(has_required_role)
-    async def cleanup(self, ctx, mode: str, time_frame: str, *, extra: str = ""):
+    async def cleanup(self, ctx, target: str, time_frame: str):
         """
-        Cleans up messages based on mode, time frame, and optional user.
+        Cleans up messages based on mode, time frame, and optional users.
+        Usage: '!rm channel' or '!rm global' or '!rm @username [time_frame]'.
         Modes: 'user', 'channel', 'global'.
         Time frame: e.g., 30s, 15m, 2h.
         Append '--backup' to time frame to save messages before deleting.
-        For user mode, mention the user followed by the time frame.
         """
-        backup = '--backup' in extra
-        user = None
+        backup = '--backup' in time_frame
+        time_frame = time_frame.replace('--backup', '').strip()
+        users = []
+        mode = None
 
-        # Parse user and time frame for 'user' mode
-        if mode == 'user':
+        # Determine the mode based on the target
+        if target.lower() == 'channel':
+            mode = 'channel'
+        elif target.lower() == 'global':
+            mode = 'global'
+        else:
+            # Assume it's a user mention
             try:
-                user = await commands.UserConverter().convert(ctx, extra.split(' ')[0])
-                time_frame = extra.split(' ')[1] if len(extra.split(' ')) > 1 else time_frame
+                users = [await commands.UserConverter().convert(ctx, target)]
+                mode = 'user'
             except commands.UserNotFound:
-                await ctx.send("User not found.")
+                await ctx.send("I see no shit")
                 return
 
         # Parse time frame
         time_dict = {'s': 1, 'm': 60, 'h': 3600}
         match = re.match(r"(\d+)([smh])$", time_frame)
         if not match:
-            await ctx.send("Invalid time frame. Format should be like '30s', '15m', or '2h'.")
+            await ctx.send("A jakiś normalny przedział czasowy?. Format: '30s', '15m', or '2h'.")
             return
 
         amount, unit = match.groups()
         time_limit = datetime.now(pytz.utc) - timedelta(seconds=int(amount) * time_dict[unit])
 
         def check(message):
-            if user and message.author != user:
+            if users and message.author not in users:
                 return False
             return message.created_at > time_limit
 
@@ -58,7 +65,7 @@ class CleanupModule(commands.Cog):
 
         # Cleanup messages with rate-limiting
         try:
-            if mode == 'user' and user:
+            if mode == 'user' and users:
                 await self.cleanup_with_delay(ctx.channel, check)
             elif mode == 'channel':
                 await self.cleanup_with_delay(ctx.channel, check)
@@ -66,9 +73,9 @@ class CleanupModule(commands.Cog):
                 for channel in ctx.guild.text_channels:
                     await self.cleanup_with_delay(channel, check)
             else:
-                await ctx.send("Invalid mode. Please use 'user', 'channel', or 'global'.")
+                await ctx.send("Nie znasz sie kurwa. sprecyzuj 'user', 'channel', lub 'global'.")
         except Exception as e:
-            await ctx.send(f"An error occurred: {e}")
+            await ctx.send(f"Coś sie zjebało: {e}")
 
     async def cleanup_with_delay(self, channel, check, delay=1):
         """Deletes messages with a delay between deletions to avoid rate-limiting."""
@@ -78,9 +85,9 @@ class CleanupModule(commands.Cog):
                     await message.delete()
                     await asyncio.sleep(delay)  # Prevent rate-limiting
                 except discord.errors.Forbidden:
-                    print(f"Permission error: Unable to delete message from {message.author}")
+                    print(f"Nie umie {message.author}")
                 except discord.errors.NotFound:
-                    print(f"Message already deleted: {message.id}")
+                    print(f"Ale tu nic nie ma {message.id}")
 
     async def backup_messages(self, ctx, mode, check):
         """Backs up messages before deletion."""
@@ -99,12 +106,12 @@ class CleanupModule(commands.Cog):
                     for attachment in message.attachments:
                         attachment_path = os.path.join(backup_folder, attachment.filename)
                         await attachment.save(attachment_path)
-                        file.write(f"Attachment saved: {attachment.filename}\n")
+                        file.write(f"Backup: {attachment.filename}\n")
 
         try:
             await ctx.author.send("Backup completed.", file=discord.File(file_path))
         except discord.errors.Forbidden:
-            await ctx.send("I couldn't send you a DM. Please check your DM settings.")
+            await ctx.send("Halo? Jest tam kto? Nie odbierasz ode mnie poczty :(")
 
 async def setup(bot):
     await bot.add_cog(CleanupModule(bot))
