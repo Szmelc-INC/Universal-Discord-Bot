@@ -196,8 +196,8 @@ queue
 > `[time]` uses format like: `5s`, `10m`, `1h` etc \
 > add `--backup` flag to first backup and send to user issuing command, before deletion.
 ```bash
-rm user [time] @username
-rm user [time] @username --backup
+rm <@username> [time] 
+rm <@username> [time] --backup
 rm channel [time]
 rm global [time]
 ```
