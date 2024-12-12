@@ -48,6 +48,7 @@ game         - Start Tictactoe game between two users
 join    - Join user's voice channel
 leave   - Leave voice channel
 play    - Play song, or add to queue
+search  - Search for a song by query
 stop    - Stop music
 skip    - Skip current song
 queue   - List current queue
@@ -187,6 +188,7 @@ keyword 2:response x, response y
 join
 leave
 play <URL>
+search <query>
 stop
 skip
 queue
