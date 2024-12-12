@@ -202,6 +202,6 @@ class MusicBotCog(commands.Cog):
             await ctx.send(f"Error searching YouTube: {e}")
 
 async def setup(bot):
-    youtube_api_key = os.getenv('YOUTUBE_API_KEY')  # Set your YouTube API key in an environment variable
+    youtube_api_key = os.getenv('YOUTUBE_API_KEY') 
     cog = MusicBotCog(bot, youtube_api_key)
     await bot.add_cog(cog)
