@@ -4,13 +4,18 @@ import asyncio
 import subprocess
 import json
 import os
+from googleapiclient.discovery import build
 
 class MusicBotCog(commands.Cog):
-    def __init__(self, bot):
+    def __init__(self, bot, youtube_api_key):
         self.bot = bot
         self.server_sessions = {}  # Tracks playback sessions per server
         self.server_queues = {}    # Tracks queues for each server
         self.cookies_path = "cookies.txt"  # Path to cookies file
+        self.youtube_api_key = youtube_api_key  # API key for YouTube Data API
+
+        # Create a YouTube API client
+        self.youtube = build('youtube', 'v3', developerKey=self.youtube_api_key)
 
     async def play_next(self, guild_id, ctx):
         """Plays the next track in the queue for a server."""
@@ -171,7 +176,32 @@ class MusicBotCog(commands.Cog):
             await ctx.send(f"Current queue: {', '.join(queue_list[:5])}... ({len(queue_list)} total)")
         else:
             await ctx.send("The queue is empty.")
+    
+    @commands.command()
+    async def search(self, ctx, *, query: str):
+        """Search YouTube for a video and play the first result."""
+        # Search for the query on YouTube
+        try:
+            search_response = self.youtube.search().list(
+                q=query,
+                part='snippet',
+                type='video',
+                maxResults=1
+            ).execute()
+
+            if search_response['items']:
+                video = search_response['items'][0]
+                video_url = f"https://www.youtube.com/watch?v={video['id']['videoId']}"
+                await ctx.send(f"Found: {video['snippet']['title']} - {video_url}")
+
+                # Play the video
+                await self.play_url(ctx, ctx.guild.id, video_url)
+            else:
+                await ctx.send("No results found.")
+        except Exception as e:
+            await ctx.send(f"Error searching YouTube: {e}")
 
 async def setup(bot):
-    cog = MusicBotCog(bot)
+    youtube_api_key = os.getenv('YOUTUBE_API_KEY')  # Set your YouTube API key in an environment variable
+    cog = MusicBotCog(bot, youtube_api_key)
     await bot.add_cog(cog)
