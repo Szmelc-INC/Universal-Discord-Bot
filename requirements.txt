@@ -3,5 +3,6 @@ discord.py==2.4.0
 pytz==2022.7.1
 Requests==2.32.3
 pypresence==4.3.0
-flask
-flask_sock
+pynacl
+websockets
+ffmpeg
