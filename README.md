@@ -178,7 +178,7 @@ keyword 1:reponse 1, response 2
 keyword 2:response x, response y
 ```
 
-> `music_vc.py`
+> `music.py`
 ```bash
 join
 leave
