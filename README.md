@@ -13,8 +13,7 @@
 
 ---
 
-<details>
-<summary><h3>📜 Commands</h3></summary>
+# 📜 Commands
 
 #### **ADMIN COMMANDS**
 ```
@@ -68,12 +67,9 @@ cycki        - Fetch random NSFW picture from zmarsa.pl
 furry        - Fetch some furry arts
 ```
 
-</details>
-
 ---
 
-<details>
-<summary><h3>🧩 Modules</h3></summary>
+# 🧩 Modules
 
 #### **Commands by Module:**
 
@@ -204,12 +200,9 @@ rm channel [time]
 rm global [time]
 ```
 
-</details>
-
 ---
 
-<details>
-<summary><h3>⚙️Setup & Config</h3></summary>
+# ⚙️Setup & Config
 
 # Installation & Setup
 > **Download source code with:**
@@ -266,12 +259,9 @@ nohup python3 main.py <bot_name> &
 keyword:response 1, response 2
 ```
 
-</details>
-
 ---
 
-<details>
-<summary><h4>Misc</h4></summary>
+### Misc
   
 > *Want to contribute? Feel free to reach out via Email, GitHub or Discord!*
 
@@ -280,4 +270,3 @@ keyword:response 1, response 2
 
 
 ***"Not as good as other bots, but good enough!"***
-</details>
