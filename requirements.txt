@@ -5,4 +5,10 @@ Requests==2.32.3
 pypresence==4.3.0
 pynacl
 websockets
-ffmpeg
+google-api-python-client
+mutagen==1.46.0
+typing_extensions==4.12.1
+aiohttp==3.8.4
+multidict==6.0.4
+yarl==1.8.2
+attrs==22.2.0
