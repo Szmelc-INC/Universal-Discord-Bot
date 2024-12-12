@@ -7,7 +7,6 @@
 ---
 
 # 📖 **Manual**  
-> **Click to expand each category...**  
 > `Commands` contains a compact list with descriptions.  
 > For detailed information about individual commands and their usage, refer to the `Modules` section.
 
