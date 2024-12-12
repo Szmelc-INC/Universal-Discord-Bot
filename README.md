@@ -58,6 +58,7 @@ textemoji    - Print some random text emojis
 coinflip     - Flip a coin
 diceroll     - Roll a dice (either D6 or D20)
 randomstring - Generate random string of characters
+help         - Display currently enabled modules and list of commands
 ```
 
 #### **NSFW**
