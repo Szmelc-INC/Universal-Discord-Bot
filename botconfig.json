@@ -1,10 +1,22 @@
 {
-  "admins": ["123456789012345678"],
-  "adminRoles": ["987654321098765432"],
+  "admins": ["818166724641030193"],
+  "adminRoles": ["1180412519190364202"],
   "blacklist": {
-    "users": [],
+    "users": ["343106022912819201"],
     "roles": [],
     "guilds": []
   },
-  "values": {}
+  "values": {},
+  "bots": {
+    "bot1": {
+      "modules_folder": "modules",
+      "enabled_modules": [],
+      "disabled_modules": []
+    },
+    "bot2": {
+      "modules_folder": "modules",
+      "enabled_modules": [],
+      "disabled_modules": ["examplemodule"]
+    }
+  }
 }

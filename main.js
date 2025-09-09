@@ -5,9 +5,15 @@ const inquirer = require('inquirer').default;
 const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
 
-const CONFIG_PATH = path.join(__dirname, 'config.json');
 const TOKEN_PATH = path.join(__dirname, '.discordrc');
-const GLOBAL_CONFIG_PATH = path.join(__dirname, 'botconfig.json');
+const CONFIG_PATH = path.join(__dirname, 'botconfig.json');
+
+const COLORS = {
+  reset: '\x1b[0m',
+  debug: '\x1b[36m',
+  warn: '\x1b[33m',
+  error: '\x1b[31m'
+};
 
 function loadJSON(file) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -27,9 +33,9 @@ async function loadModules(modulesFolder, enabled = [], disabled = [], debug = f
     try {
       const mod = require(path.join(modulesFolder, file));
       modules.push(mod);
-      if (debug) console.log(`[DEBUG] loaded module ${file}`);
+      if (debug) console.log(`${COLORS.debug}[DEBUG]${COLORS.reset} loaded module ${file}`);
     } catch (e) {
-      console.error(`[DEBUG] failed to load module ${file}:`, e.message);
+      console.error(`${COLORS.error}[DEBUG] failed to load module ${file}:${COLORS.reset}`, e.message);
     }
   }
   return modules;
@@ -47,30 +53,55 @@ async function registerCommands(client, commands, reload = false) {
 }
 
 async function startBot(botName, config, tokens, options = {}) {
-  const { debug = false, reload = false } = options;
+  const { debug = false, reload = false, log = false } = options;
   if (debug) {
-    console.log(`[DEBUG] starting bot ${botName}`);
-    console.log(fs.existsSync(TOKEN_PATH) ? '[DEBUG] .discordrc found' : '[DEBUG] .discordrc missing');
+    console.log(`${COLORS.debug}[DEBUG] starting bot ${botName}${COLORS.reset}`);
+    console.log(fs.existsSync(TOKEN_PATH)
+      ? `${COLORS.debug}[DEBUG] .discordrc found${COLORS.reset}`
+      : `${COLORS.warn}[WARN] .discordrc missing${COLORS.reset}`);
   }
-  const botConfig = config[botName];
-  if (!botConfig) {
-    console.log(`Bot ${botName} not found.`);
-    return;
-  }
-  const token = tokens[botConfig.tokenKey];
+  const token = tokens[botName];
   if (!token) {
     console.log(`Token for ${botName} not found in .discordrc`);
     return;
   }
 
-  const globalConfig = fs.existsSync(GLOBAL_CONFIG_PATH) ? loadJSON(GLOBAL_CONFIG_PATH) : {};
+  const botConfig = (config.bots || {})[botName] || {
+    modules_folder: 'modules',
+    enabled_modules: [],
+    disabled_modules: []
+  };
+
   const client = new Client({ intents: [GatewayIntentBits.Guilds] });
   client.commands = new Collection();
-  client.config = globalConfig;
+  client.config = config;
+  client.botConfig = botConfig;
+
+  client.isAdmin = (memberOrUser) => {
+    const userId = memberOrUser?.id || memberOrUser?.user?.id;
+    if (config.admins?.includes(userId)) return true;
+    const roles = memberOrUser?.roles?.cache;
+    if (roles && config.adminRoles) {
+      for (const role of roles.values()) {
+        if (config.adminRoles.includes(role.id)) return true;
+      }
+    }
+    return false;
+  };
+
+  if (log) {
+    const logFile = fs.createWriteStream(path.join(__dirname, `log_${botName}_${Date.now()}.log`));
+    ['log', 'warn', 'error'].forEach(level => {
+      const orig = console[level];
+      console[level] = (...args) => {
+        logFile.write(args.map(String).join(' ') + '\n');
+        orig(...args);
+      };
+    });
+  }
 
   const modulesFolder = path.join(__dirname, botConfig.modules_folder);
   client.modulesFolder = modulesFolder;
-  client.botConfig = botConfig;
 
   const modules = await loadModules(modulesFolder, botConfig.enabled_modules, botConfig.disabled_modules, debug);
   modules.forEach(m => client.commands.set(m.data.name, m));
@@ -88,6 +119,13 @@ async function startBot(botName, config, tokens, options = {}) {
   });
 
   client.on('interactionCreate', async interaction => {
+    const bl = config.blacklist || {};
+    const isBlacklisted =
+      (bl.users && bl.users.includes(interaction.user.id)) ||
+      (interaction.member && bl.roles && interaction.member.roles.cache.some(r => bl.roles.includes(r.id))) ||
+      (bl.guilds && bl.guilds.includes(interaction.guildId));
+    if (isBlacklisted) return;
+
     if (interaction.isChatInputCommand()) {
       const cmd = client.commands.get(interaction.commandName);
       if (!cmd) return;
@@ -103,9 +141,9 @@ async function startBot(botName, config, tokens, options = {}) {
   });
 
   if (debug) {
-    client.on('debug', msg => console.log('[DEBUG]', msg));
-    client.on('warn', msg => console.warn('[WARN]', msg));
-    client.on('error', err => console.error('[ERROR]', err));
+    client.on('debug', msg => console.log(`${COLORS.debug}[DEBUG]${COLORS.reset} ${msg}`));
+    client.on('warn', msg => console.warn(`${COLORS.warn}[WARN]${COLORS.reset} ${msg}`));
+    client.on('error', err => console.error(`${COLORS.error}[ERROR]${COLORS.reset}`, err));
   }
 
   try {
@@ -116,7 +154,13 @@ async function startBot(botName, config, tokens, options = {}) {
 }
 
 async function enableDisableModule(config, botName, action) {
-  const botConfig = config[botName];
+  const bots = config.bots || {};
+  const botConfig = bots[botName] || {
+    modules_folder: 'modules',
+    enabled_modules: [],
+    disabled_modules: []
+  };
+  bots[botName] = botConfig;
   const modulesFolder = path.join(__dirname, botConfig.modules_folder);
   const allModules = fs.readdirSync(modulesFolder).filter(f => f.endsWith('.js')).map(f => f.slice(0, -3));
   const choices = allModules.map(m => ({ name: m, value: m }));
@@ -132,9 +176,9 @@ async function enableDisableModule(config, botName, action) {
 }
 
 async function menu(options = {}) {
-  const config = loadJSON(CONFIG_PATH);
+  const config = fs.existsSync(CONFIG_PATH) ? loadJSON(CONFIG_PATH) : { bots: {} };
   const tokens = fs.existsSync(TOKEN_PATH) ? loadJSON(TOKEN_PATH) : {};
-  const bots = Object.keys(config);
+  const bots = Object.keys(tokens);
   while (true) {
     const { bot } = await inquirer.prompt([{ type: 'list', name: 'bot', message: 'Select bot', choices: bots.concat(['Exit']) }]);
     if (bot === 'Exit') break;
@@ -154,12 +198,20 @@ async function main() {
     .option('bot', { type: 'string', describe: 'Bot name to start' })
     .option('debug', { type: 'boolean', describe: 'Enable verbose debugging', default: false })
     .option('reload', { type: 'boolean', describe: 'Unregister and reload commands on start', default: false })
+    .option('log', { type: 'boolean', describe: 'Log console output to file', default: false })
     .argv;
-  const config = loadJSON(CONFIG_PATH);
+  const config = fs.existsSync(CONFIG_PATH) ? loadJSON(CONFIG_PATH) : { bots: {} };
   const tokens = fs.existsSync(TOKEN_PATH) ? loadJSON(TOKEN_PATH) : {};
-  const options = { debug: argv.debug, reload: argv.reload };
+  const options = { debug: argv.debug, reload: argv.reload, log: argv.log };
+  const botNames = Object.keys(tokens);
   if (argv.bot) {
+    if (!tokens[argv.bot]) {
+      console.log(`Bot ${argv.bot} not found. Available bots: ${botNames.join(', ')}`);
+      return;
+    }
     await startBot(argv.bot, config, tokens, options);
+  } else if (botNames.length === 1) {
+    await startBot(botNames[0], config, tokens, options);
   } else {
     await menu(options);
   }

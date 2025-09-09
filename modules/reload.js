@@ -5,11 +5,7 @@ module.exports = {
     .setName('reload')
     .setDescription('Reload all bot commands'),
   async execute(interaction) {
-    const config = interaction.client.config || {};
-    const admins = config.admins || [];
-    const adminRoles = config.adminRoles || [];
-    const member = interaction.member;
-    const isAdmin = admins.includes(interaction.user.id) || (member && member.roles.cache.some(r => adminRoles.includes(r.id)));
+    const isAdmin = interaction.client.isAdmin(interaction.member || interaction.user);
     if (!isAdmin) {
       return interaction.reply({ content: 'Unauthorized', ephemeral: true });
     }
