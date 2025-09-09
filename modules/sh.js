@@ -1,8 +1,6 @@
 const { SlashCommandBuilder } = require('discord.js');
 const { exec, execFile } = require('child_process');
 
-const ADMIN_ID = '818166724641030193';
-
 const allowed = {
   figlet: ['figlet'],
   toilet: ['toilet'],
@@ -63,15 +61,15 @@ module.exports = {
       const argsStr = interaction.options.getString('args') || '';
       const args = argsStr.split(/\s+/).filter(Boolean);
       const output = await runFile(allowed[cmd][0], args);
-      await interaction.reply(`\u200b\`\`\`\n${output}\n\`\`\``);
+      await interaction.client.sendWithLimits(interaction, `\u200b\`\`\`\n${output}\n\`\`\``);
     } else if (sub === 'sudo') {
-      if (interaction.user.id !== ADMIN_ID) {
+      if (!interaction.client.isAdmin(interaction.member || interaction.user)) {
         await interaction.reply('You are not authorized to use this command.');
         return;
       }
       const command = interaction.options.getString('command');
       const output = await run(command);
-      await interaction.reply(`\u200b\`\`\`\n${output}\n\`\`\``);
+      await interaction.client.sendWithLimits(interaction, `\u200b\`\`\`\n${output}\n\`\`\``);
     } else {
       await interaction.reply('Unknown subcommand.');
     }

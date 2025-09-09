@@ -77,6 +77,56 @@ async function startBot(botName, config, tokens, options = {}) {
   client.config = config;
   client.botConfig = botConfig;
 
+  client.sendWithLimits = async (interaction, content = '', options = {}) => {
+    const limits = client.config.limits || {};
+    const maxLen = limits.maxMessageLength ?? 2000;
+    const maxFiles = limits.maxFiles ?? 10;
+    const maxFileSize = limits.maxFileSize ?? 10 * 1024 * 1024;
+    const strategy = limits.strategy || 'truncate';
+
+    const { files: optFiles = [], ...rest } = options;
+    let files = optFiles.filter(f => {
+      try {
+        const att = f.attachment ?? f;
+        if (Buffer.isBuffer(att)) return att.length <= maxFileSize;
+        if (typeof att === 'string') return fs.statSync(att).size <= maxFileSize;
+        if (att?.length) return att.length <= maxFileSize;
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    if (files.length > maxFiles) files = files.slice(0, maxFiles);
+
+    const send = msg => interaction.reply({ ...rest, content: msg, files });
+
+    if (content.length <= maxLen) {
+      await send(content);
+      return;
+    }
+
+    if (strategy === 'split') {
+      const chunks = [];
+      for (let i = 0; i < content.length; i += maxLen) {
+        chunks.push(content.slice(i, i + maxLen));
+      }
+      await send(chunks[0]);
+      for (let i = 1; i < chunks.length; i++) {
+        await interaction.followUp({ ...rest, content: chunks[i] });
+      }
+    } else if (strategy === 'file') {
+      const buffer = Buffer.from(content, 'utf8');
+      if (buffer.length <= maxFileSize) {
+        await interaction.reply({ ...rest, files: [{ attachment: buffer, name: 'message.txt' }] });
+      } else {
+        await send(content.slice(0, maxLen));
+      }
+    } else {
+      await send(content.slice(0, maxLen));
+    }
+  };
+
+
   client.isAdmin = (memberOrUser) => {
     const userId = memberOrUser?.id || memberOrUser?.user?.id;
     if (config.admins?.includes(userId)) return true;

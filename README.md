@@ -27,6 +27,19 @@ Create a `.discordrc` file with your tokens:
 
 Configure your bots in `botconfig.json` (modules, admins, blacklist). The keys should match the names in `.discordrc`.
 
+`botconfig.json` also provides response limits and how to handle content that exceeds them:
+
+```json
+"limits": {
+  "maxMessageLength": 2000,
+  "maxFileSize": 10485760,
+  "maxFiles": 10,
+  "strategy": "truncate" // or "split" / "file"
+}
+```
+
+Use `split` to send long output in multiple messages or `file` to upload it as a text file.
+
 Run the bot with:
 
 ```bash
