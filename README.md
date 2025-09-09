@@ -25,14 +25,19 @@ Create a `.discordrc` file with your tokens:
 
 > **Never commit this file.** The `.gitignore` already excludes it.
 
-Update `config.json` with the mapping key from `.discordrc` and run:
+Configure your bots in `botconfig.json` (modules, admins, blacklist). The keys should match the names in `.discordrc`.
+
+Run the bot with:
 
 ```bash
-# Interactive menu
+# Interactive menu (lists bots from `.discordrc`)
 node main.js
 
-# Start directly
-node main.js --bot "bot 1"
+# Start directly by name
+node main.js --bot bot1
+
+# Save console output to a log file
+node main.js --bot bot1 --log
 ```
 
 ## Creating Modules
