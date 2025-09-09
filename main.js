@@ -1,7 +1,9 @@
 const fs = require('fs');
 const path = require('path');
 const { Client, Collection, GatewayIntentBits, REST, Routes } = require('discord.js');
+
 const inquirer = require('inquirer').default;
+
 const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
 
@@ -31,6 +33,7 @@ async function loadModules(modulesFolder, enabled = [], disabled = []) {
 
 async function registerCommands(client, commands) {
   const rest = new REST({ version: '10' }).setToken(client.token);
+
   const existing = await rest.get(Routes.applicationCommands(client.user.id));
   for (const cmd of commands) {
     const json = cmd.data.toJSON();
@@ -60,6 +63,7 @@ async function startBot(botName, config, tokens) {
   const modulesFolder = path.join(__dirname, botConfig.modules_folder);
   const modules = await loadModules(modulesFolder, botConfig.enabled_modules, botConfig.disabled_modules);
   modules.forEach(m => client.commands.set(m.data.name, m));
+
 
   client.once('clientReady', async () => {
     await registerCommands(client, modules);
