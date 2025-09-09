@@ -1,14 +1,13 @@
 const fs = require('fs');
 const path = require('path');
 const { Client, Collection, GatewayIntentBits, REST, Routes } = require('discord.js');
-
 const inquirer = require('inquirer').default;
-
 const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
 
 const CONFIG_PATH = path.join(__dirname, 'config.json');
 const TOKEN_PATH = path.join(__dirname, '.discordrc');
+const GLOBAL_CONFIG_PATH = path.join(__dirname, 'botconfig.json');
 
 function loadJSON(file) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -18,35 +17,41 @@ function saveJSON(file, data) {
   fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 
-async function loadModules(modulesFolder, enabled = [], disabled = []) {
+async function loadModules(modulesFolder, enabled = [], disabled = [], debug = false) {
   const modules = [];
   const files = fs.readdirSync(modulesFolder).filter(f => f.endsWith('.js'));
   for (const file of files) {
     const name = file.slice(0, -3);
     if (enabled.length && !enabled.includes(name)) continue;
     if (disabled.includes(name)) continue;
-    const mod = require(path.join(modulesFolder, file));
-    modules.push(mod);
+    try {
+      const mod = require(path.join(modulesFolder, file));
+      modules.push(mod);
+      if (debug) console.log(`[DEBUG] loaded module ${file}`);
+    } catch (e) {
+      console.error(`[DEBUG] failed to load module ${file}:`, e.message);
+    }
   }
   return modules;
 }
 
-async function registerCommands(client, commands) {
+async function registerCommands(client, commands, reload = false) {
   const rest = new REST({ version: '10' }).setToken(client.token);
-
-  const existing = await rest.get(Routes.applicationCommands(client.user.id));
+  if (reload) {
+    await rest.put(Routes.applicationCommands(client.user.id), { body: [] });
+  }
   for (const cmd of commands) {
     const json = cmd.data.toJSON();
-    const current = existing.find(c => c.name === json.name && c.type === json.type);
-    if (current) {
-      await rest.patch(Routes.applicationCommand(client.user.id, current.id), { body: json });
-    } else {
-      await rest.post(Routes.applicationCommands(client.user.id), { body: json });
-    }
+    await rest.post(Routes.applicationCommands(client.user.id), { body: json });
   }
 }
 
-async function startBot(botName, config, tokens) {
+async function startBot(botName, config, tokens, options = {}) {
+  const { debug = false, reload = false } = options;
+  if (debug) {
+    console.log(`[DEBUG] starting bot ${botName}`);
+    console.log(fs.existsSync(TOKEN_PATH) ? '[DEBUG] .discordrc found' : '[DEBUG] .discordrc missing');
+  }
   const botConfig = config[botName];
   if (!botConfig) {
     console.log(`Bot ${botName} not found.`);
@@ -58,15 +63,27 @@ async function startBot(botName, config, tokens) {
     return;
   }
 
+  const globalConfig = fs.existsSync(GLOBAL_CONFIG_PATH) ? loadJSON(GLOBAL_CONFIG_PATH) : {};
   const client = new Client({ intents: [GatewayIntentBits.Guilds] });
   client.commands = new Collection();
+  client.config = globalConfig;
+
   const modulesFolder = path.join(__dirname, botConfig.modules_folder);
-  const modules = await loadModules(modulesFolder, botConfig.enabled_modules, botConfig.disabled_modules);
+  client.modulesFolder = modulesFolder;
+  client.botConfig = botConfig;
+
+  const modules = await loadModules(modulesFolder, botConfig.enabled_modules, botConfig.disabled_modules, debug);
   modules.forEach(m => client.commands.set(m.data.name, m));
 
+  client.reloadAll = async () => {
+    const mods = await loadModules(client.modulesFolder, client.botConfig.enabled_modules, client.botConfig.disabled_modules, debug);
+    client.commands.clear();
+    mods.forEach(m => client.commands.set(m.data.name, m));
+    await registerCommands(client, mods, true);
+  };
 
-  client.once('clientReady', async () => {
-    await registerCommands(client, modules);
+  client.once('ready', async () => {
+    await registerCommands(client, modules, reload);
     console.log(`${client.user.tag} ready`);
   });
 
@@ -84,6 +101,12 @@ async function startBot(botName, config, tokens) {
       }
     }
   });
+
+  if (debug) {
+    client.on('debug', msg => console.log('[DEBUG]', msg));
+    client.on('warn', msg => console.warn('[WARN]', msg));
+    client.on('error', err => console.error('[ERROR]', err));
+  }
 
   try {
     await client.login(token);
@@ -108,7 +131,7 @@ async function enableDisableModule(config, botName, action) {
   saveJSON(CONFIG_PATH, config);
 }
 
-async function menu() {
+async function menu(options = {}) {
   const config = loadJSON(CONFIG_PATH);
   const tokens = fs.existsSync(TOKEN_PATH) ? loadJSON(TOKEN_PATH) : {};
   const bots = Object.keys(config);
@@ -117,7 +140,7 @@ async function menu() {
     if (bot === 'Exit') break;
     const { action } = await inquirer.prompt([{ type: 'list', name: 'action', message: 'Action', choices: ['Start', 'Enable Module', 'Disable Module', 'Back'] }]);
     if (action === 'Start') {
-      await startBot(bot, config, tokens);
+      await startBot(bot, config, tokens, options);
     } else if (action === 'Enable Module') {
       await enableDisableModule(config, bot, 'Enable');
     } else if (action === 'Disable Module') {
@@ -127,13 +150,18 @@ async function menu() {
 }
 
 async function main() {
-  const argv = yargs(hideBin(process.argv)).option('bot', { type: 'string', describe: 'Bot name to start' }).argv;
+  const argv = yargs(hideBin(process.argv))
+    .option('bot', { type: 'string', describe: 'Bot name to start' })
+    .option('debug', { type: 'boolean', describe: 'Enable verbose debugging', default: false })
+    .option('reload', { type: 'boolean', describe: 'Unregister and reload commands on start', default: false })
+    .argv;
   const config = loadJSON(CONFIG_PATH);
   const tokens = fs.existsSync(TOKEN_PATH) ? loadJSON(TOKEN_PATH) : {};
+  const options = { debug: argv.debug, reload: argv.reload };
   if (argv.bot) {
-    await startBot(argv.bot, config, tokens);
+    await startBot(argv.bot, config, tokens, options);
   } else {
-    await menu();
+    await menu(options);
   }
 }
 

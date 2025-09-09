@@ -1,0 +1,10 @@
+{
+  "admins": ["123456789012345678"],
+  "adminRoles": ["987654321098765432"],
+  "blacklist": {
+    "users": [],
+    "roles": [],
+    "guilds": []
+  },
+  "values": {}
+}
