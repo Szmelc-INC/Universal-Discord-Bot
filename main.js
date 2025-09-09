@@ -126,6 +126,7 @@ async function startBot(botName, config, tokens, options = {}) {
     }
   };
 
+
   client.isAdmin = (memberOrUser) => {
     const userId = memberOrUser?.id || memberOrUser?.user?.id;
     if (config.admins?.includes(userId)) return true;
