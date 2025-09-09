@@ -1,0 +1,15 @@
+{
+  "name": "universal-discord-bot",
+  "version": "1.0.0",
+  "description": "Modular Discord bot in Node.js",
+  "main": "main.js",
+  "scripts": {
+    "start": "node main.js",
+    "test": "node -e \"console.log('no tests')\""
+  },
+  "dependencies": {
+    "discord.js": "^14.15.3",
+    "inquirer": "^9.2.9",
+    "yargs": "^17.7.2"
+  }
+}
