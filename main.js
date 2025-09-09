@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { Client, Collection, GatewayIntentBits, REST, Routes } = require('discord.js');
-const inquirer = require('inquirer');
+const inquirer = require('inquirer').default;
 const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
 
@@ -31,8 +31,16 @@ async function loadModules(modulesFolder, enabled = [], disabled = []) {
 
 async function registerCommands(client, commands) {
   const rest = new REST({ version: '10' }).setToken(client.token);
-  const data = commands.map(cmd => cmd.data.toJSON());
-  await rest.put(Routes.applicationCommands(client.user.id), { body: data });
+  const existing = await rest.get(Routes.applicationCommands(client.user.id));
+  for (const cmd of commands) {
+    const json = cmd.data.toJSON();
+    const current = existing.find(c => c.name === json.name && c.type === json.type);
+    if (current) {
+      await rest.patch(Routes.applicationCommand(client.user.id, current.id), { body: json });
+    } else {
+      await rest.post(Routes.applicationCommands(client.user.id), { body: json });
+    }
+  }
 }
 
 async function startBot(botName, config, tokens) {
@@ -53,7 +61,7 @@ async function startBot(botName, config, tokens) {
   const modules = await loadModules(modulesFolder, botConfig.enabled_modules, botConfig.disabled_modules);
   modules.forEach(m => client.commands.set(m.data.name, m));
 
-  client.once('ready', async () => {
+  client.once('clientReady', async () => {
     await registerCommands(client, modules);
     console.log(`${client.user.tag} ready`);
   });
