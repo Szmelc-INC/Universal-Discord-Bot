@@ -1,0 +1,56 @@
+services:
+  discord-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # container_name and --bot arg are permanently set by docker.sh via sed
+    # when you choose a bot. Do not use ${VAR} interpolation here (we never load .env as compose env-file).
+    container_name: SkyNET
+    restart: unless-stopped
+
+    # The --bot argument tells main.js which token to load from the injected /app/.env (JSON)
+    command: ["node", "main.js", "--bot", "SkyNET"]
+
+    environment:
+      - NODE_ENV=production
+
+    volumes:
+      # All persistent data lives under ./docker/ (clean convention, never pollute project root)
+      - ./docker/logs:/app/logs
+      - ./docker/downloads:/app/.downloads
+      - ./docker/backups:/app/backups
+      - ./docker/dm-logs:/app/dm-logs
+      - ./docker/config:/app/config
+
+      # .env (JSON bot tokens) is NEVER a volume or bind mount.
+      # docker.sh uses `docker cp` after `up` to inject/refresh it inside the container.
+      # This completely avoids the EISDIR crash (Docker creating .env as dir when host file disappeared).
+      # See docker.sh and README for details.
+
+      # Optional for development (live module edits without rebuild):
+      # - ./modules:/app/modules:ro
+
+    # Healthcheck (lightweight liveness)
+    healthcheck:
+      test: ["CMD", "node", "-e", "process.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    # Resource limits (tune for your server)
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+    # Logging (prevents unbounded growth)
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

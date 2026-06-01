@@ -1,2 +1,29 @@
 node_modules/
-.discordrc
+package-lock.json
+
+# Bot tokens (JSON format - never commit)
+.env
+.env.bak
+.env.*
+
+# Docker runtime / persistent data (volumes live here)
+docker/
+docker/*
+!docker/.gitkeep
+
+# Legacy / stray data dirs from previous bad mounts (clean these)
+backups/
+dm-logs/
+logs/
+.downloads/
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Dev only
+.vscode/
+.idea/
+*.log

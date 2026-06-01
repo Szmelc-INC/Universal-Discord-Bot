@@ -1,38 +1,31 @@
 const { SlashCommandBuilder } = require('discord.js');
 
-const API_KEY = '8af4164f-ccf2-4463-86f7-aeaf2d6f7f1d';
-
 async function fetchJSON(url) {
-  const res = await fetch(url, {
-    headers: {
-      'Accepts': 'application/json',
-      'X-CMC_PRO_API_KEY': API_KEY
-    }
-  });
+  const res = await fetch(url, { headers: { 'accept': 'application/json' } });
+  if (!res.ok) throw new Error('API error ' + res.status);
   return res.json();
 }
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('crypto')
-    .setDescription('Show crypto prices')
-    .addStringOption(o => o.setName('symbol').setDescription('Symbol or TOP10').setRequired(false)),
+    .setDescription('Show cryptocurrency prices (via CoinGecko)')
+    .addStringOption(o => o.setName('symbol').setDescription('e.g. bitcoin, ethereum or TOP').setRequired(false)),
   async execute(interaction) {
-    const symbol = (interaction.options.getString('symbol') || 'TOP10').toUpperCase();
+    const sym = (interaction.options.getString('symbol') || 'top').toLowerCase();
     try {
-      if (symbol === 'TOP10') {
-        const data = await fetchJSON('https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest?limit=10&convert=PLN');
-        if (data.status.error_code !== 0) throw new Error('API error');
-        const msg = data.data.map(c => `${c.name} (${c.symbol}): ${c.quote.PLN.price.toFixed(2)} PLN`).join('\n');
-        await interaction.reply(`Top 10 Cryptocurrencies:\n${msg}`);
+      if (sym === 'top' || sym === 'TOP10' || sym === 'top10') {
+        const data = await fetchJSON('https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=10&page=1');
+        const msg = data.map(c => `${c.name} (${c.symbol.toUpperCase()}): $${c.current_price}`).join('\n');
+        await interaction.client.sendWithLimits(interaction, `Top coins:\n${msg}`);
       } else {
-        const data = await fetchJSON(`https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest?symbol=${symbol}&convert=PLN`);
-        if (data.status.error_code !== 0) throw new Error('API error');
-        const price = data.data[symbol].quote.PLN.price;
-        await interaction.reply(`The current price of ${symbol} is ${price.toFixed(2)} PLN.`);
+        const data = await fetchJSON(`https://api.coingecko.com/api/v3/simple/price?ids=${encodeURIComponent(sym)}&vs_currencies=usd`);
+        const key = Object.keys(data)[0];
+        if (!key || !data[key]) throw new Error('Unknown symbol');
+        await interaction.reply(`${key}: $${data[key].usd}`);
       }
     } catch (e) {
-      await interaction.reply(`Error fetching price: ${e.message}`);
+      await interaction.reply(`Error: ${e.message || 'failed to fetch'}`);
     }
   }
 };

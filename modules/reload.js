@@ -1,4 +1,4 @@
-const { SlashCommandBuilder } = require('discord.js');
+const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -7,7 +7,7 @@ module.exports = {
   async execute(interaction) {
     const isAdmin = interaction.client.isAdmin(interaction.member || interaction.user);
     if (!isAdmin) {
-      return interaction.reply({ content: 'Unauthorized', ephemeral: true });
+      return interaction.reply({ content: 'Unauthorized', flags: MessageFlags.Ephemeral });
     }
     await interaction.reply('Reloading...');
     try {
