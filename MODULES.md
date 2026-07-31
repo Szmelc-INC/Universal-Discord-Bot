@@ -48,6 +48,7 @@ Modules can be:
 - `dms` — Log direct messages received by the bot
 - `reaction` — Reaction role system (configurable via JSON)
 - `responses` — Keyword-based auto responder (uses `misc/responses.txt`)
+- `ollama` — Local AI agent via Ollama (mention / reply-to-bot triggers)
 
 ### Other / Niche
 - `crypto` — Cryptocurrency prices (CoinGecko)
@@ -219,6 +220,57 @@ Passive keyword responder.
 
 ---
 
+### `/ollama`
+**File:** `ollama.js`  
+**Config:** `config/ollama.json`
+
+Local AI agent backed by an [Ollama](https://ollama.com) server. When triggered, the message text is sent to the LLM; the model reply is posted as a Discord reply in the same channel (split across multiple messages if needed; Discord hard-caps content at **2000** characters per message).
+
+**Triggers (passive `messageCreate` listener):**
+- **Bot mention** — e.g. `@Bot what is the weather metaphor for?`
+- **Reply to the bot** — replying to any of the bot’s messages continues the conversation
+
+Mention tokens are stripped before the text is used as the user prompt. Empty prompts get a short help line from config.
+
+**Slash commands:**
+- `/ollama status` — Module state, model, server URL, connectivity (`/api/tags`), history/inference summary
+- `/ollama ask <prompt> [private]` — One-shot question (optional ephemeral reply)
+- `/ollama reload` — Reload `config/ollama.json` from disk (admin)
+- `/ollama clear-history [scope]` — Clear channel or all in-memory history (admin)
+- `/ollama model [name]` — Get/set model name and persist to config (admin)
+- `/ollama config` — Summary of active config (admin)
+
+**Rich config (`config/ollama.json`) highlights:**
+
+| Section | Purpose |
+|---------|---------|
+| `server.baseUrl` | Client URL (default `http://127.0.0.1:11434`; server binds per `ollama-env.sh` `OLLAMA_HOST`) |
+| `server.timeoutMs` | Client abort timeout; `0` = none (aligned with `OLLAMA_LOAD_TIMEOUT=-1`) |
+| `server.keepAlive` | Passed as `keep_alive` on each request (default `2m`) |
+| `server.think` | **`false` by default.** Thinking models (Qwen3.5) otherwise put the whole generation in `message.thinking` and leave `message.content` empty, which made the bot post `errorMessage` on HTTP 200 |
+| `server.env` | Mirror of `config/ollama-env.sh` for reference (server-side knobs) |
+| `server.api` | `"chat"` (`/api/chat`) or `"generate"` (`/api/generate`) |
+| `model` | Model tag (e.g. `llama3.2`, `mistral`, `qwen2.5`) |
+| `systemPrompt` | System instructions for the agent |
+| `triggers.*` | Mention/reply toggles, channel/guild/user allow & block lists |
+| `history.*` | In-memory multi-turn context (`scope`: `channel`, `user`, `channel-user`, `guild-user`), `maxMessages`, TTL |
+| `inference.*` | Ollama options; `num_ctx` defaults to **8192** (`OLLAMA_CONTEXT_LENGTH`) |
+| `response.*` | Short-reply bias, split strategy, typing, max chars; **`stripThinking`** drops CoT/`<think>` so only the final reply is posted |
+| `rateLimit.*` | Per-user cooldown and busy handling |
+
+Server process env lives in **`config/ollama-env.sh`** (`OLLAMA_CONTEXT_LENGTH`, `OLLAMA_KEEP_ALIVE`, flash attention, KV cache, etc.). The Discord module does not start Ollama; it only talks to the API with matching client settings.
+
+After editing the JSON file, run `/ollama reload` (or restart the bot). Toggle the whole module with `/modules disable ollama` / `enable`.
+
+**Requirements:**
+- A running Ollama instance reachable from the bot host
+- The chosen model pulled (`ollama pull <model>`)
+- Discord intents already used by the bot: `Guilds`, `GuildMessages`, `MessageContent` (mentions + content)
+
+**Docker note:** If the bot runs in Docker and Ollama on the host, set `server.baseUrl` to something like `http://host.docker.internal:11434` (or the host LAN IP), not `127.0.0.1`.
+
+---
+
 ### Other Notable Modules
 
 - **`/image`** — `/image losowe` (memes with multiple fallbacks) and `/image cycki` (NSFW)
@@ -242,6 +294,7 @@ Some modules do not primarily register slash commands. Instead, they use the `in
 - `responses` (messageCreate)
 - `reaction` (messageReactionAdd/Remove)
 - `dms` (messageCreate for DMs)
+- `ollama` (messageCreate — mention / reply-to-bot AI agent)
 - `anon` (uses slash but has special behavior)
 
 These can still be enabled/disabled at runtime.
@@ -259,6 +312,7 @@ Several modules depend on external tools being installed on the host:
 | `music`    | `yt-dlp` + FFmpeg    | Voice playback                     |
 | `shredder` | —                    | Needs `ManageMessages` permission  |
 | `webhooks` | `ManageWebhooks`     | Discord permission                 |
+| `ollama`   | Ollama server        | Local LLM API (`/api/chat`)        |
 
 ---
 
