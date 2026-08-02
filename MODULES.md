@@ -16,6 +16,7 @@ Modules can be:
 ## Module Categories
 
 ### Admin & Management
+- `democracy` — Direct-democracy voting engine (vote on almost anything: moderation, roles, channels, permissions, server settings, emoji/stickers)
 - `help` — Dynamic help system
 - `info` — Rich user and server information
 - `modules` (module-manager) — Runtime module management
@@ -58,6 +59,43 @@ Modules can be:
 ---
 
 ## Detailed Module Documentation
+
+### `/democracy`
+**File:** `democracy.js`
+**Config (rules):** `config/democracy.json`
+**Runtime state:** `config/democracy-state.json` (auto-created, git-ignored — holds active votes, history and DM subscriptions; survives restarts and `/modules reload`)
+
+Direct-democracy engine: anyone can start a vote about almost anything, everyone votes with buttons (secret ballot), and if it passes the bot executes the action automatically.
+
+**Starting a vote — `/democracy start <category> …`:**
+- `mod` — `op` (timeout / untimeout / kick / ban / unban), `user`, `punish_minutes` (timeout length, 1–40320), `vote_length`, `reason`, `ov_min_votes`
+- `role` — `op` (create / delete / assign / unassign / permission / rename / recolor / hoist / mentionable), `role`, `user`, `name`, `permission` (autocomplete), `value`, …
+- `channel` — `op` (create / delete / permission / rename / topic / nsfw / slowmode), `channel`, `type`, `target_role`/`target_user`, `permission` (autocomplete), `perm_state` (allow/deny/neutral → true/false/none), `value`, …
+- `server` — `setting` (name / description), `value`
+- `asset` — `type` (emoji / sticker), `op` (add / remove), `name`, `url`, `id`
+
+Every start subcommand accepts `vote_length` (e.g. `30m`, `2h`, `1d`), an optional `reason` (**max 250 chars**, shown in the report/embed/event) and `ov_min_votes` (**admins only** — bypass the computed threshold).
+
+**Management subcommands:**
+- `/democracy list` — active votes on this server
+- `/democracy info <vote_id>` — vote details; **admins also see who voted how**
+- `/democracy history [limit]` — finished votes with results
+- `/democracy stop <vote_id>` — **admin failsafe:** cancel & delete an ongoing vote
+- `/democracy notify <on|off>` — toggle DM notifications for every new vote
+- `/democracy config` — **admin:** show the active rules
+
+**How it works:**
+- Each vote posts a brief report in the vote channel, opens a **thread** with an embed "poll" (✅ ZA / ❌ PRZECIW / 🤝 WSTRZYMUJĘ SIĘ buttons) and creates a **guild scheduled event** (cosmetic, best-effort).
+- **Secret ballot:** votes are tallied privately; the embed shows only aggregate counts. Identities are stored in state and revealed only to admins via `/democracy info`. *(Deliberate deviation: native Discord polls expose voters, which would break the secrecy requirement, so buttons + an aggregate embed are used instead of a native poll.)*
+- **Outcome rule:** a vote **passes** when the quorum is met (total ballots ≥ `minVotes`) **and** the FOR share of decisive (FOR+AGAINST) ballots ≥ `passRatio` (default 50%) with FOR > AGAINST.
+- **Thresholds** come from `config/democracy.json` per category and are scaled up by server size (`activeMemberRatio × guild.memberCount`, floored at the category minimum). Built-in floors match the spec: **ban 13 votes / 24h–7d**, **kick 7 / 1h–3d**, **timeout 3 / 5min–1h**, **role & channel delete 13 / 1h–14d**, **role & channel create 7**. *(min/max "time" = how long the vote runs; the timeout punishment length is the separate `punish_minutes` option.)*
+- **Safety:** `Administrator` (and anything in `forbiddenPermissions`) can **never** be voted in; new roles are created with **no permissions** (each permission must be voted in/out one-by-one); the server owner, bot admins (`config.json` `admins`/`adminRoles`) and anyone in `protected` are **immune** to kick/ban/timeout/role changes. Immunity and bot hierarchy/permissions are re-checked **at execution time** — if the target left or the bot lost rights, the vote is archived with status `error` instead of crashing.
+- **Admins bypass everything:** they can set any `vote_length` and override the threshold via `ov_min_votes` directly in the start command.
+- Vote timers are persisted; on startup/reload active votes are rescheduled (and finalized immediately if their deadline already passed while the bot was offline).
+
+**Requirements:** bot permissions matching the actions it must perform (`Ban Members`, `Kick Members`, `Moderate Members`, `Manage Roles`, `Manage Channels`, `Manage Guild`, `Manage Emojis and Stickers`, `Manage Events`, `Create Public Threads`), and a bot role higher than any role/member it acts on. Set `voteChannelId` in the config to pin where vote threads are opened (otherwise the command's channel is used).
+
+---
 
 ### `/help`
 **File:** `help.js`
