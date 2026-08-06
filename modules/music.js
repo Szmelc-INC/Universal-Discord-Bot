@@ -1,9 +1,20 @@
 const { SlashCommandBuilder, MessageFlags } = require('discord.js');
-const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, VoiceConnectionStatus, getVoiceConnection } = require('@discordjs/voice');
+const {
+  joinVoiceChannel,
+  createAudioPlayer,
+  createAudioResource,
+  entersState,
+  AudioPlayerStatus,
+  VoiceConnectionStatus,
+  getVoiceConnection,
+} = require('@discordjs/voice');
 const { spawn } = require('child_process');
 const path = require('path');
 
 const COOKIES_FILE = path.join(__dirname, '..', 'cookies.txt');
+
+// How long to wait for the voice connection to actually become Ready (UDP/RTP up).
+const READY_TIMEOUT_MS = 20_000;
 
 // Per-guild music state
 const musicStates = new Map();
@@ -57,9 +68,34 @@ async function playNext(guildId, interaction) {
   if (state.queue.length === 0) {
     state.isPlaying = false;
     if (interaction) {
-      await interaction.followUp({ content: 'Queue is empty. Playback stopped.' }).catch(() => {});
+      await interaction.followUp({ content: 'Queue is empty. Playback stopped.' })
+        .catch(e => console.error('[music] followUp failed:', e.message));
     }
     return;
+  }
+
+  // Make sure the voice connection is actually Ready before we push audio into it.
+  // Without this the player silently buffers forever: the bot "says" it is playing
+  // but no packets ever leave (classic UDP-not-ready / NAT / Docker port issue).
+  if (!state.connection) {
+    console.error('[music] playNext called without a voice connection');
+    if (interaction) await interaction.followUp({ content: 'Not connected to a voice channel. Use `/music join` first.' }).catch(() => {});
+    return;
+  }
+  if (state.connection.state.status !== VoiceConnectionStatus.Ready) {
+    try {
+      console.log(`[music] Waiting for voice connection to become Ready (current: ${state.connection.state.status})...`);
+      await entersState(state.connection, VoiceConnectionStatus.Ready, READY_TIMEOUT_MS);
+    } catch (e) {
+      console.error('[music] Voice connection never reached Ready:', e.message);
+      if (interaction) {
+        await interaction.followUp({
+          content: '⚠️ Could not establish the voice connection (never reached **Ready**). '
+            + 'This is usually a network/UDP issue — if the bot runs in Docker, make sure outbound UDP is not blocked.',
+        }).catch(() => {});
+      }
+      return;
+    }
   }
 
   const nextItem = state.queue.shift();
@@ -77,20 +113,29 @@ async function playNext(guildId, interaction) {
     metadata: { title: nextItem.title || 'Unknown' }
   });
 
+  console.log(`[music] Starting playback: ${nextItem.title || nextItem.url}`);
   state.player.play(resource);
   state.isPlaying = true;
 
   if (interaction) {
-    await interaction.followUp({ content: `▶️ Now playing: **${nextItem.title || nextItem.url}**` }).catch(() => {});
+    await interaction.followUp({ content: `▶️ Now playing: **${nextItem.title || nextItem.url}**` })
+      .catch(e => console.error('[music] followUp failed:', e.message));
   }
 }
 
 function setupPlayerEvents(guildId, player) {
+  // Surface every player transition so a stalled/silent playback is diagnosable in logs.
+  player.on('stateChange', (oldState, newState) => {
+    if (oldState.status !== newState.status) {
+      console.log(`[music] Player: ${oldState.status} -> ${newState.status}`);
+    }
+  });
+
   player.on(AudioPlayerStatus.Idle, () => {
     const state = getState(guildId);
     if (state.queue.length > 0) {
       // Continue queue
-      playNext(guildId).catch(console.error);
+      playNext(guildId).catch(e => console.error('[music] playNext error:', e));
     } else {
       state.isPlaying = false;
     }
@@ -100,7 +145,36 @@ function setupPlayerEvents(guildId, player) {
     console.error('[music] Audio player error:', error);
     const state = getState(guildId);
     state.isPlaying = false;
-    playNext(guildId).catch(console.error);
+    playNext(guildId).catch(e => console.error('[music] playNext error:', e));
+  });
+}
+
+function setupConnectionEvents(guildId, connection) {
+  // Log connection lifecycle — the readiness of this (UDP/RTP) layer is what determines
+  // whether audio is actually heard, independent of "the bot appears in the channel".
+  connection.on('stateChange', (oldState, newState) => {
+    if (oldState.status !== newState.status) {
+      console.log(`[music] Voice connection: ${oldState.status} -> ${newState.status}`);
+    }
+  });
+
+  connection.on(VoiceConnectionStatus.Disconnected, async () => {
+    // Try a short reconnect; if it can't recover, tear the connection down cleanly.
+    try {
+      await Promise.race([
+        entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+        entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+      ]);
+      console.log('[music] Voice connection is reconnecting...');
+    } catch {
+      console.warn('[music] Voice connection lost and could not recover; destroying.');
+      try { connection.destroy(); } catch {}
+      musicStates.delete(guildId);
+    }
+  });
+
+  connection.on('error', (err) => {
+    console.error('[music] Voice connection error:', err);
   });
 }
 
@@ -133,6 +207,8 @@ module.exports = {
 
       const channel = interaction.member.voice.channel;
 
+      await interaction.deferReply();
+
       try {
         const connection = joinVoiceChannel({
           channelId: channel.id,
@@ -145,19 +221,37 @@ module.exports = {
 
         state.connection = connection;
         state.player = player;
+        setupConnectionEvents(guildId, connection);
         setupPlayerEvents(guildId, player);
 
-        await interaction.reply(`Joined **${channel.name}**`);
+        // Wait until the voice connection is actually usable (UDP handshake done),
+        // instead of reporting success the moment the gateway state updates.
+        try {
+          await entersState(connection, VoiceConnectionStatus.Ready, READY_TIMEOUT_MS);
+        } catch (e) {
+          console.error('[music] Voice connection did not become Ready after join:', e.message);
+          try { connection.destroy(); } catch {}
+          musicStates.delete(guildId);
+          return interaction.editReply({
+            content: `⚠️ Joined **${channel.name}** on the gateway, but the voice connection never became **Ready** `
+              + `(${e.message}). Audio will not play. This is almost always a network/UDP problem — check firewall/NAT, `
+              + `and if running in Docker make sure outbound UDP is allowed.`,
+          });
+        }
+
+        console.log(`[music] Voice connection Ready in "${channel.name}" (${guildId})`);
+        await interaction.editReply(`Joined **${channel.name}** ✅`);
       } catch (e) {
-        await interaction.reply({ content: `Failed to join: ${e.message}`, flags: MessageFlags.Ephemeral });
+        console.error('[music] Failed to join voice channel:', e);
+        await interaction.editReply({ content: `Failed to join: ${e.message}` });
       }
       return;
     }
 
     if (sub === 'leave') {
-      const connection = getVoiceConnection(guildId);
+      const connection = getVoiceConnection(guildId) || state.connection;
       if (connection) {
-        connection.destroy();
+        try { connection.destroy(); } catch {}
         musicStates.delete(guildId);
         await interaction.reply('Left the voice channel.');
       } else {
@@ -185,12 +279,18 @@ module.exports = {
             const args = [`ytsearch1:${query}`, '--print', '%(webpage_url)s', '--no-warnings'];
             const child = spawn('yt-dlp', args);
             let out = '';
+            let err = '';
             child.stdout.on('data', d => out += d);
-            child.on('close', () => resolve(out.trim().split('\n')[0]));
+            child.stderr.on('data', d => err += d);
+            child.on('close', (code) => {
+              if (code !== 0) return reject(new Error(err.trim() || 'yt-dlp search failed'));
+              resolve(out.trim().split('\n')[0]);
+            });
             child.on('error', reject);
           });
           if (searchUrl) url = searchUrl;
         } catch (e) {
+          console.error('[music] Search failed:', e.message);
           return interaction.editReply('Search failed. Try pasting a direct YouTube URL.');
         }
       }
