@@ -9,6 +9,7 @@ const {
   getVoiceConnection,
 } = require('@discordjs/voice');
 const { spawn } = require('child_process');
+const fs = require('fs');
 const path = require('path');
 
 const COOKIES_FILE = path.join(__dirname, '..', 'cookies.txt');
@@ -26,41 +27,43 @@ function getState(guildId) {
       player: null,
       connection: null,
       isPlaying: false,
+      currentProcess: null, // the yt-dlp child currently feeding the audio resource
     });
   }
   return musicStates.get(guildId);
 }
 
-async function getAudioStreamUrl(url) {
-  return new Promise((resolve, reject) => {
-    const args = [
-      '--no-warnings',
-      '--no-playlist',
-      '-f', 'bestaudio/best',
-      '-g', url
-    ];
-    if (require('fs').existsSync(COOKIES_FILE)) {
-      args.push('--cookies', COOKIES_FILE);
-    }
+// Kill the yt-dlp process that is currently streaming, if any.
+// We own this process; the ffmpeg process lives *inside* the audio resource and is
+// torn down by the resource itself. Killing yt-dlp explicitly on every teardown path
+// avoids orphaning it (a yt-dlp blocked in a network read won't get SIGPIPE when the
+// pipe closes, so relying on that alone leaks a process per skip/stop).
+function killStream(state) {
+  if (state && state.currentProcess) {
+    try { state.currentProcess.kill('SIGKILL'); } catch {}
+    state.currentProcess = null;
+  }
+}
 
-    const child = spawn('yt-dlp', args);
-    let output = '';
-    let errorOutput = '';
-
-    child.stdout.on('data', (data) => output += data);
-    child.stderr.on('data', (data) => errorOutput += data);
-
-    child.on('close', (code) => {
-      if (code !== 0) {
-        return reject(new Error(errorOutput.trim() || 'yt-dlp failed to extract audio URL'));
-      }
-      const streamUrl = output.trim().split('\n').pop();
-      if (!streamUrl) return reject(new Error('No audio stream URL found'));
-      resolve(streamUrl);
-    });
-
-    child.on('error', reject);
-  });
+// Spawn yt-dlp streaming the raw audio to stdout.
+//
+// IMPORTANT: we pipe yt-dlp's stdout straight into ffmpeg rather than resolving a
+// direct googlevideo URL via `yt-dlp -g` and handing that URL to ffmpeg. The `-g`
+// URLs are minted for a specific yt-dlp client (e.g. ANDROID_VR) and reject ffmpeg's
+// plain HTTP GET, so ffmpeg reads 0 bytes and the track "plays" for 0 seconds (silent,
+// no error). Letting yt-dlp do the fetching sidesteps all of that.
+function spawnYtdlpStream(url) {
+  const args = [
+    '--no-warnings',
+    '--no-playlist',
+    '-f', 'bestaudio/best',
+    '-o', '-', // stream to stdout
+    url,
+  ];
+  if (fs.existsSync(COOKIES_FILE)) {
+    args.push('--cookies', COOKIES_FILE);
+  }
+  return spawn('yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
 async function playNext(guildId, interaction) {
@@ -98,19 +101,47 @@ async function playNext(guildId, interaction) {
     }
   }
 
+  // Starting a fresh track: make sure no previous yt-dlp is left running.
+  killStream(state);
+
   const nextItem = state.queue.shift();
-  const streamUrl = await getAudioStreamUrl(nextItem.url).catch(e => {
-    console.error('[music] Failed to get stream:', e);
-    return null;
+
+  const child = spawnYtdlpStream(nextItem.url);
+  state.currentProcess = child;
+
+  // Track whether any audio actually came out, and keep the tail of stderr for diagnostics.
+  let gotData = false;
+  let stderrTail = '';
+
+  child.stdout.once('data', () => { gotData = true; });
+  // A Readable that emits 'error' with no listener throws and crashes the process.
+  child.stdout.on('error', e => console.error('[music] yt-dlp stdout error:', e.message));
+  child.stderr.on('data', d => {
+    stderrTail = (stderrTail + d.toString()).split('\n').slice(-4).join('\n');
+  });
+  child.on('error', e => {
+    console.error('[music] yt-dlp spawn error:', e.message);
+    if (interaction) {
+      interaction.followUp({ content: `⚠️ Could not start playback (is \`yt-dlp\` installed?): ${e.message}` }).catch(() => {});
+    }
+  });
+  child.on('close', code => {
+    if (state.currentProcess === child) state.currentProcess = null;
+    // Non-zero exit with no audio produced = the same user-visible symptom as the old bug
+    // (says "Now playing", then silence). Surface it explicitly instead of failing silently.
+    if (code && code !== 0 && !gotData) {
+      console.error(`[music] yt-dlp exited ${code} with no audio for "${nextItem.title || nextItem.url}": ${stderrTail.trim()}`);
+      if (interaction) {
+        interaction.followUp({
+          content: `⚠️ Could not play **${nextItem.title || nextItem.url}** — yt-dlp failed to fetch the audio `
+            + '(the video may be private, age-restricted, region-locked, or removed).',
+        }).catch(() => {});
+      }
+    }
   });
 
-  if (!streamUrl) {
-    if (interaction) await interaction.followUp({ content: `Failed to play: ${nextItem.title || nextItem.url}` }).catch(() => {});
-    return playNext(guildId, interaction);
-  }
-
-  const resource = createAudioResource(streamUrl, {
-    metadata: { title: nextItem.title || 'Unknown' }
+  const resource = createAudioResource(child.stdout, {
+    metadata: { title: nextItem.title || 'Unknown' },
   });
 
   console.log(`[music] Starting playback: ${nextItem.title || nextItem.url}`);
@@ -144,6 +175,7 @@ function setupPlayerEvents(guildId, player) {
   player.on('error', (error) => {
     console.error('[music] Audio player error:', error);
     const state = getState(guildId);
+    killStream(state);
     state.isPlaying = false;
     playNext(guildId).catch(e => console.error('[music] playNext error:', e));
   });
@@ -168,6 +200,7 @@ function setupConnectionEvents(guildId, connection) {
       console.log('[music] Voice connection is reconnecting...');
     } catch {
       console.warn('[music] Voice connection lost and could not recover; destroying.');
+      killStream(getState(guildId));
       try { connection.destroy(); } catch {}
       musicStates.delete(guildId);
     }
@@ -251,6 +284,7 @@ module.exports = {
     if (sub === 'leave') {
       const connection = getVoiceConnection(guildId) || state.connection;
       if (connection) {
+        killStream(state);
         try { connection.destroy(); } catch {}
         musicStates.delete(guildId);
         await interaction.reply('Left the voice channel.');
@@ -327,8 +361,9 @@ module.exports = {
     }
 
     if (sub === 'stop') {
+      killStream(state);
       if (state.player) {
-        state.player.stop();
+        state.player.stop(true);
       }
       state.queue = [];
       state.isPlaying = false;
@@ -338,7 +373,8 @@ module.exports = {
 
     if (sub === 'skip') {
       if (state.player && state.isPlaying) {
-        state.player.stop();
+        killStream(state);
+        state.player.stop(true);
         await interaction.reply('Skipped current track.');
         // playNext will be triggered by the Idle event
       } else {
