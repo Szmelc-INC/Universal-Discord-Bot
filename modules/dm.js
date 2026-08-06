@@ -1,6 +1,4 @@
-const { SlashCommandBuilder } = require('discord.js');
-
-const ADMIN_ID = '818166724641030193';
+const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -9,8 +7,8 @@ module.exports = {
     .addUserOption(o => o.setName('user').setDescription('User to DM').setRequired(true))
     .addStringOption(o => o.setName('message').setDescription('Message content').setRequired(true)),
   async execute(interaction) {
-    if (interaction.user.id !== ADMIN_ID) {
-      await interaction.reply('You are not authorized to use this command.');
+    if (!interaction.client.isAdmin(interaction.member || interaction.user)) {
+      await interaction.reply({ content: 'Unauthorized.', flags: MessageFlags.Ephemeral });
       return;
     }
     const user = interaction.options.getUser('user');
@@ -19,7 +17,7 @@ module.exports = {
       await user.send(msg);
       await interaction.reply(`Message sent to ${user.tag}`);
     } catch (e) {
-      await interaction.reply(`Failed to send DM: ${e}`);
+      await interaction.reply(`Failed to send DM: ${e.message || e}`);
     }
   }
 };

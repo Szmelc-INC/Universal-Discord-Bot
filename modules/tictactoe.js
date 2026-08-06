@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } = require('discord.js');
+const { SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType, MessageFlags } = require('discord.js');
 
 class TicTacToeGame {
   constructor(player1, player2) {
@@ -64,7 +64,7 @@ module.exports = {
     collector.on('collect', async i => {
       const idx = parseInt(i.customId.split('_')[1], 10);
       if (game.board[idx] || (i.user.id !== game.current.id)) {
-        return i.reply({ content: "Not your turn!", ephemeral: true });
+        return i.reply({ content: "Not your turn!", flags: MessageFlags.Ephemeral });
       }
       const symbol = game.current.id === p1.id ? '❌' : '🔵';
       game.mark(idx, symbol);

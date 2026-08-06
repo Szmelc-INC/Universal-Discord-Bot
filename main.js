@@ -1,12 +1,12 @@
 const fs = require('fs');
 const path = require('path');
-const { Client, Collection, GatewayIntentBits, REST, Routes } = require('discord.js');
+const { Client, Collection, GatewayIntentBits, REST, Routes, MessageFlags } = require('discord.js');
 const inquirer = require('inquirer').default;
 const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
 
-const TOKEN_PATH = path.join(__dirname, '.discordrc');
-const CONFIG_PATH = path.join(__dirname, 'botconfig.json');
+const TOKEN_PATH = path.join(__dirname, '.env');
+const CONFIG_PATH = path.join(__dirname, 'config.json');
 
 const COLORS = {
   reset: '\x1b[0m',
@@ -25,19 +25,51 @@ function saveJSON(file, data) {
 
 async function loadModules(modulesFolder, enabled = [], disabled = [], debug = false) {
   const modules = [];
+  const loadedNames = [];
+  const failed = [];
+  const skipped = [];
+
   const files = fs.readdirSync(modulesFolder).filter(f => f.endsWith('.js'));
+
   for (const file of files) {
     const name = file.slice(0, -3);
-    if (enabled.length && !enabled.includes(name)) continue;
-    if (disabled.includes(name)) continue;
+
+    // Whitelist mode
+    if (enabled.length && !enabled.includes(name)) {
+      skipped.push(name);
+      continue;
+    }
+    if (disabled.includes(name)) {
+      skipped.push(name);
+      continue;
+    }
+
     try {
+      // Clear from cache so reloads actually re-execute the file (important for development)
+      delete require.cache[require.resolve(path.join(modulesFolder, file))];
+
       const mod = require(path.join(modulesFolder, file));
+
+      if (!mod || !mod.data || !mod.data.name) {
+        throw new Error('Module does not export a valid { data: SlashCommandBuilder, execute }');
+      }
+
       modules.push(mod);
-      if (debug) console.log(`${COLORS.debug}[DEBUG]${COLORS.reset} loaded module ${file}`);
+      loadedNames.push(mod.data.name);
+      console.log(`${COLORS.debug}[LOADED]${COLORS.reset} ${file} → /${mod.data.name}`);
     } catch (e) {
-      console.error(`${COLORS.error}[DEBUG] failed to load module ${file}:${COLORS.reset}`, e.message);
+      failed.push(name);
+      console.error(`${COLORS.error}[FAILED]${COLORS.reset} ${file}: ${e.message}`);
     }
   }
+
+  console.log(
+    `\n${COLORS.debug}=== Module Load Summary ===${COLORS.reset}\n` +
+    `  Loaded : ${loadedNames.length} → ${loadedNames.join(', ') || '(none)'}\n` +
+    `  Skipped: ${skipped.length}   → ${skipped.join(', ') || '(none)'}\n` +
+    `  Failed : ${failed.length}   → ${failed.join(', ') || '(none)'}\n`
+  );
+
   return modules;
 }
 
@@ -72,7 +104,16 @@ async function startBot(botName, config, tokens, options = {}) {
     disabled_modules: []
   };
 
-  const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+  const client = new Client({
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.MessageContent,
+      GatewayIntentBits.GuildMessageReactions,
+      GatewayIntentBits.DirectMessages,
+      GatewayIntentBits.GuildVoiceStates
+    ]
+  });
   client.commands = new Collection();
   client.config = config;
   client.botConfig = botConfig;
@@ -139,6 +180,7 @@ async function startBot(botName, config, tokens, options = {}) {
     return false;
   };
 
+
   if (log) {
     const logFile = fs.createWriteStream(path.join(__dirname, `log_${botName}_${Date.now()}.log`));
     ['log', 'warn', 'error'].forEach(level => {
@@ -153,19 +195,116 @@ async function startBot(botName, config, tokens, options = {}) {
   const modulesFolder = path.join(__dirname, botConfig.modules_folder);
   client.modulesFolder = modulesFolder;
 
+  client.configPath = CONFIG_PATH;
+
+  client.saveConfig = () => {
+    saveJSON(CONFIG_PATH, config);
+  };
+
+  client.getAllModuleNames = () => {
+    try {
+      return fs.readdirSync(client.modulesFolder)
+        .filter(f => f.endsWith('.js'))
+        .map(f => f.slice(0, -3));
+    } catch {
+      return [];
+    }
+  };
+
+  client.isModuleEnabled = (name) => {
+    const bc = client.botConfig || {};
+    const enabled = bc.enabled_modules || [];
+    const disabled = bc.disabled_modules || [];
+    if (disabled.includes(name)) return false;
+    if (enabled.length > 0) return enabled.includes(name);
+    return true;
+  };
+
+  client.enableModule = (name) => {
+    const bc = client.botConfig || {};
+    bc.disabled_modules = (bc.disabled_modules || []).filter(m => m !== name);
+    if (!bc.enabled_modules) bc.enabled_modules = [];
+    if (!bc.enabled_modules.includes(name)) bc.enabled_modules.push(name);
+    client.saveConfig();
+  };
+
+  client.disableModule = (name) => {
+    const bc = client.botConfig || {};
+    bc.enabled_modules = (bc.enabled_modules || []).filter(m => m !== name);
+    if (!bc.disabled_modules) bc.disabled_modules = [];
+    if (!bc.disabled_modules.includes(name)) bc.disabled_modules.push(name);
+    client.saveConfig();
+  };
+
   const modules = await loadModules(modulesFolder, botConfig.enabled_modules, botConfig.disabled_modules, debug);
-  modules.forEach(m => client.commands.set(m.data.name, m));
+
+  // Register slash commands
+  modules.forEach(m => {
+    if (m.data && m.data.name) {
+      client.commands.set(m.data.name, m);
+    }
+  });
+
+  // Initialize passive modules (responses, reaction roles, etc.)
+  modules.forEach(m => {
+    if (typeof m.init === 'function') {
+      try {
+        m.init(client);
+      } catch (e) {
+        console.error(`${COLORS.error}[INIT ERROR]${COLORS.reset} Failed to initialize module ${m.data?.name || 'unknown'}:`, e.message);
+      }
+    }
+  });
 
   client.reloadAll = async () => {
     const mods = await loadModules(client.modulesFolder, client.botConfig.enabled_modules, client.botConfig.disabled_modules, debug);
+
     client.commands.clear();
-    mods.forEach(m => client.commands.set(m.data.name, m));
-    await registerCommands(client, mods, true);
+
+    // Re-register slash commands
+    mods.forEach(m => {
+      if (m.data && m.data.name) {
+        client.commands.set(m.data.name, m);
+      }
+    });
+
+    await registerCommands(client, mods.filter(m => m.data && m.data.name), true);
+
+    // Re-initialize passive modules
+    mods.forEach(m => {
+      if (typeof m.init === 'function') {
+        try {
+          m.init(client);
+        } catch (e) {
+          console.error(`${COLORS.error}[INIT ERROR]${COLORS.reset} Failed to re-initialize module:`, e.message);
+        }
+      }
+    });
   };
 
-  client.once('ready', async () => {
+  client.once('clientReady', async () => {
     await registerCommands(client, modules, reload);
-    console.log(`${client.user.tag} ready`);
+    const loadedCmds = [...client.commands.keys()].sort();
+    console.log(`${COLORS.debug}[READY]${COLORS.reset} ${client.user.tag} is online`);
+    console.log(`${COLORS.debug}[COMMANDS]${COLORS.reset} Registered ${loadedCmds.length} slash commands: ${loadedCmds.join(', ')}`);
+
+    // Restore last saved bot presence (if any)
+    try {
+      const presPath = path.join(__dirname, 'config', 'bot-presence.json');
+      if (fs.existsSync(presPath)) {
+        const saved = JSON.parse(fs.readFileSync(presPath, 'utf8'));
+        if (saved?.type && saved?.text) {
+          const { ActivityType } = require('discord.js');
+          const typeMap = { playing: ActivityType.Playing, listening: ActivityType.Listening, watching: ActivityType.Watching, competing: ActivityType.Competing, streaming: ActivityType.Streaming, custom: ActivityType.Custom };
+          await client.user.setPresence({
+            activities: [{ name: saved.text, type: typeMap[saved.type] || ActivityType.Playing, url: saved.url || undefined }]
+          });
+          console.log(`${COLORS.debug}[PRESENCE]${COLORS.reset} Restored previous presence: ${saved.type} ${saved.text}`);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to restore presence:', e.message);
+    }
   });
 
   client.on('interactionCreate', async interaction => {
@@ -179,6 +318,10 @@ async function startBot(botName, config, tokens, options = {}) {
     if (interaction.isChatInputCommand()) {
       const cmd = client.commands.get(interaction.commandName);
       if (!cmd) return;
+      if (!client.isModuleEnabled(interaction.commandName)) {
+        await interaction.reply({ content: 'This module is currently disabled.', flags: MessageFlags.Ephemeral });
+        return;
+      }
       try { await cmd.execute(interaction); }
       catch (e) { console.error(e); }
     } else if (interaction.isAutocomplete()) {

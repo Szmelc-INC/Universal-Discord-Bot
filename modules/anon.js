@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder, MessageFlags } = require('discord.js');
 
 const ANON_CHANNEL_IDS = [
   '1314503562960834571', // Channel ID 1
@@ -61,9 +61,9 @@ module.exports = {
           await channel.send({ embeds: [embed], files });
         }
       }
-      await interaction.reply({ content: 'Sent anonymously!', ephemeral: true });
+      await interaction.reply({ content: 'Sent anonymously!', flags: MessageFlags.Ephemeral });
     } else {
-      await interaction.reply({ content: 'You must provide a message or attach a file/image to send.', ephemeral: true });
+      await interaction.reply({ content: 'You must provide a message or attach a file/image to send.', flags: MessageFlags.Ephemeral });
     }
   }
 };

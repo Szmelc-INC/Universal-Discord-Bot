@@ -1,6 +1,4 @@
-const { SlashCommandBuilder } = require('discord.js');
-
-const ADMIN_ID = '818166724641030193';
+const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -21,8 +19,8 @@ module.exports = {
       .setDescription('List roles of a member')
       .addUserOption(o => o.setName('member').setDescription('Member').setRequired(true))),
   async execute(interaction) {
-    if (interaction.user.id !== ADMIN_ID) {
-      await interaction.reply('You are not authorized to use this command.');
+    if (!interaction.client.isAdmin(interaction.member || interaction.user)) {
+      await interaction.reply({ content: 'Unauthorized.', flags: MessageFlags.Ephemeral });
       return;
     }
     const sub = interaction.options.getSubcommand();
@@ -48,7 +46,7 @@ module.exports = {
         await interaction.reply(roles.length ? `${member.displayName} has the following roles: ${roles.join(', ')}` : `${member.displayName} has no roles.`);
       }
     } catch (e) {
-      await interaction.reply(`An error occurred: ${e}`);
+      await interaction.reply(`An error occurred: ${e.message || e}`);
     }
   }
 };

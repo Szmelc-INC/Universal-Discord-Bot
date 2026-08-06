@@ -1,15 +1,21 @@
 {
   "name": "universal-discord-bot",
-  "version": "1.0.0",
+  "version": "3.0.0",
   "description": "Modular Discord bot in Node.js",
   "main": "main.js",
+  "engines": {
+    "node": ">=22.12"
+  },
   "scripts": {
     "start": "node main.js",
     "test": "node -e \"console.log('no tests')\""
   },
   "dependencies": {
-    "discord.js": "^14.15.3",
+    "@discordjs/voice": "^0.19.2",
+    "discord.js": "^14.26.4",
+    "ffmpeg-static": "^5.3.0",
     "inquirer": "^9.2.9",
+    "libsodium-wrappers": "^0.8.4",
     "yargs": "^17.7.2"
   }
 }

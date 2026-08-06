@@ -1,0 +1,9 @@
+{
+  "enabled": false,
+  "messageId": "123456789012345678",
+  "guildId": "",
+  "mappings": {
+    "👀": "Example Role Name",
+    "👍": "Another Role"
+  }
+}
