@@ -14,6 +14,7 @@ docker/*
 # Legacy / stray data dirs from previous bad mounts (clean these)
 backups/
 dm-logs/
+exports/
 logs/
 .downloads/
 
