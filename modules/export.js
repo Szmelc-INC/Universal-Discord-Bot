@@ -262,7 +262,14 @@ function walkFiles(rootDir, current = rootDir, out = []) {
   return out;
 }
 
-function createZip(rootDir, outPath) {
+// Deflating anything bigger than this pins the event loop for too long to be
+// worth the ratio; store it instead.
+const MAX_DEFLATE_BYTES = 32 * 1024 * 1024;
+
+// Async purely so the loop can breathe between entries — a global export with
+// media can push hundreds of MB through here, and a blocked loop means missed
+// gateway heartbeats and a reconnect mid-export.
+async function createZip(rootDir, outPath) {
   const entries = walkFiles(rootDir);
   if (!entries.length) throw new Error('nothing to archive');
   if (entries.length > 65534) throw new Error(`too many files for a non-zip64 archive (${entries.length})`);
@@ -274,6 +281,7 @@ function createZip(rootDir, outPath) {
 
   try {
     for (const rel of entries) {
+      await new Promise(r => setImmediate(r));
       const abs = path.join(rootDir, rel);
       const stat = fs.statSync(abs);
       const data = fs.readFileSync(abs);
@@ -282,7 +290,7 @@ function createZip(rootDir, outPath) {
 
       let method = 0;
       let payload = data;
-      if (data.length && !STORE_EXTENSIONS.has(ext)) {
+      if (data.length && data.length <= MAX_DEFLATE_BYTES && !STORE_EXTENSIONS.has(ext)) {
         const deflated = zlib.deflateRawSync(data, { level: 6 });
         if (deflated.length < data.length) {
           method = 8;
@@ -507,7 +515,10 @@ module.exports = {
   data: new SlashCommandBuilder()
     .setName('export')
     .setDescription('Scrape and export messages, then upload the archive and DM a single-use link (Admin only)')
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    // Visibility hint only — Discord hides the command below this permission,
+    // which would lock out `config.adminRoles` members who lack Administrator.
+    // The real authorization is the `client.isAdmin` check in execute().
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .addSubcommand(sc => sc
       .setName('run')
       .setDescription('Run an export with a custom configuration')
@@ -652,35 +663,54 @@ module.exports = {
       return Boolean(perms && perms.has(PermissionFlagsBits.ViewChannel) && perms.has(PermissionFlagsBits.ReadMessageHistory));
     };
     const TEXTLIKE = [ChannelType.GuildText, ChannelType.GuildAnnouncement, ChannelType.GuildVoice];
+    // Forums hold no messages themselves — their posts are threads, so they only
+    // matter as thread parents.
+    const THREAD_ONLY_PARENTS = [ChannelType.GuildForum, ChannelType.GuildMedia];
 
     let channels = [];
+    let threadParents = [];
+    const preErrors = []; // collected before the job object exists
     try {
       if (scope === 'global') {
         const all = await guild.channels.fetch();
-        channels = [...all.values()].filter(c => c && TEXTLIKE.includes(c.type) && readable(c));
+        const visible = [...all.values()].filter(c => c && readable(c));
+        channels = visible.filter(c => TEXTLIKE.includes(c.type));
+        threadParents = visible.filter(c => THREAD_ONLY_PARENTS.includes(c.type));
       } else {
         const ch = chosenChannel ? await guild.channels.fetch(chosenChannel.id).catch(() => null) : interaction.channel;
-        if (!ch || typeof ch.messages?.fetch !== 'function') {
-          await interaction.editReply('That channel has no message history to export.').catch(() => {});
+        if (!ch) {
+          await interaction.editReply('That channel could not be resolved.').catch(() => {});
           return;
         }
         if (!readable(ch)) {
           await interaction.editReply(`Missing **View Channel** / **Read Message History** in ${ch}.`).catch(() => {});
           return;
         }
-        channels = [ch];
+        if (THREAD_ONLY_PARENTS.includes(ch.type)) {
+          if (!includeThreads) {
+            await interaction.editReply(`${ch} is a forum — its messages live in posts. Re-run with \`threads: true\` to export them.`).catch(() => {});
+            return;
+          }
+          threadParents = [ch];
+        } else if (typeof ch.messages?.fetch !== 'function') {
+          await interaction.editReply('That channel has no message history to export.').catch(() => {});
+          return;
+        } else {
+          channels = [ch];
+        }
       }
 
       if (includeThreads) {
-        const parents = [...channels];
-        for (const parent of parents) {
+        for (const parent of [...channels, ...threadParents]) {
           if (typeof parent.threads?.fetchActive !== 'function') continue;
           try {
             const active = await parent.threads.fetchActive();
             for (const th of active.threads.values()) {
               if (readable(th)) channels.push(th);
             }
-          } catch {}
+          } catch (e) {
+            preErrors.push(`${parent.name}: thread listing failed (${e.message})`);
+          }
         }
       }
     } catch (e) {
@@ -715,7 +745,7 @@ module.exports = {
       mediaSkipped: 0,
       mediaBudgetHit: false,
       hitLimit: false,
-      errors: []
+      errors: preErrors
     };
     jobs.set(guild.id, job);
 
@@ -796,7 +826,9 @@ module.exports = {
           channel: scope === 'channel' ? channels[0]?.id : null,
           user: targetUser ? { id: targetUser.id, tag: targetUser.tag } : 'all users',
           media: withMedia,
-          threads: includeThreads ? 'active threads included' : 'text channels only (threads excluded)',
+          threads: includeThreads
+            ? 'active threads and forum posts included; archived threads excluded'
+            : 'text channels only (threads and forum posts excluded)',
           format,
           limit: maxMessages,
           window: { from: fromTs === 0 ? 'beginning' : new Date(fromTs).toISOString(), to: new Date(toTs).toISOString() }
@@ -840,7 +872,7 @@ module.exports = {
       job.stage = 'archiving';
       lastProgress = 0;
       await progress(`Archiving ${job.totalMessages} message(s)…`);
-      const zipInfo = createZip(workDir, zipPath);
+      const zipInfo = await createZip(workDir, zipPath);
 
       // ---- upload ----
       job.stage = 'uploading';

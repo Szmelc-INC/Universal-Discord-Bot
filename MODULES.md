@@ -207,7 +207,7 @@ users, no media, since the beginning of history):
 | `from` | window start — ISO date or relative (`7d`); overrides `since` | — |
 | `to` | window end — ISO date, relative (`2h`), or `now` | `now` |
 | `format` | `both`, `json`, `txt` | `both` |
-| `threads` | `true` / `false` — also scrape **active** threads | `false` |
+| `threads` | `true` / `false` — also scrape **active** threads and forum posts | `false` |
 | `limit` | safety cap on total messages (1–500000) | `50000` |
 
 **Archive layout:**
@@ -231,9 +231,13 @@ export-<date>.zip
 - **Timeframes use snowflake cursors,** so `since: 2h` fetches only that slice instead of walking
   the whole channel history.
 - **Permissions:** a channel is included when the bot has `View Channel` + `Read Message History`
-  (deliberately *not* `Manage Messages` — exporting only reads).
-- Threads are excluded unless `threads: true`, and only *active* threads are covered; archived
-  threads are never scraped. The manifest states which of the two applied.
+  (deliberately *not* `Manage Messages` — exporting only reads). The command's
+  `setDefaultMemberPermissions` is only a visibility hint set to `Manage Server`; real
+  authorization is `client.isAdmin`, so `config.adminRoles` members are not locked out by Discord
+  before the check runs.
+- Threads and forum posts are excluded unless `threads: true`. Only *active* threads are covered —
+  archived threads are never scraped. The manifest records which of the two applied. Selecting a
+  forum channel directly requires `threads: true`, since a forum holds no messages of its own.
 - One export at a time per server.
 
 **No external binaries required.** The archive is written by a built-in ZIP writer and the upload
