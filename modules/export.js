@@ -12,6 +12,9 @@ const UPLOAD_ENDPOINT = 'https://bashupload.app/';
 const USER_AGENT = 'UniversalDiscordBot/3.0 (+export module)';
 
 const DEFAULTS = {
+  // Discord's default per-file ceiling. Archives at or below this are DM'd
+  // directly and never touch a third-party host.
+  directAttachmentMaxBytes: 10 * 1024 * 1024,
   maxMessages: 50000,
   maxAttachmentBytes: 25 * 1024 * 1024,
   maxMediaTotalBytes: 512 * 1024 * 1024,
@@ -206,12 +209,14 @@ async function uploadArchive(filePath, timeoutMs) {
     const target = UPLOAD_ENDPOINT + encodeURIComponent(path.basename(filePath));
     body = await putFile(target, filePath, timeoutMs);
   }
-  const link = extractLink(body);
+  const raw = String(body).trim();
+  // Only used to tell a successful upload from an error page — the DM shows the
+  // service's own response verbatim, so nothing here can mangle the real link.
+  const link = extractLink(raw);
   if (!link) {
-    throw new Error(`upload response contained no download URL (via ${via}): ${String(body).trim().slice(0, 300)}`);
+    throw new Error(`upload response contained no download URL (via ${via}): ${raw.slice(0, 300)}`);
   }
-  // The service answers with an http:// link but serves the same path over TLS.
-  return { link: link.replace(/^http:\/\//i, 'https://'), via, raw: String(body).trim() };
+  return { link, via, raw };
 }
 
 /* ------------------------------------------------------------------ *
@@ -269,7 +274,7 @@ const MAX_DEFLATE_BYTES = 32 * 1024 * 1024;
 // Async purely so the loop can breathe between entries — a global export with
 // media can push hundreds of MB through here, and a blocked loop means missed
 // gateway heartbeats and a reconnect mid-export.
-async function createZip(rootDir, outPath) {
+async function createZip(rootDir, outPath, onProgress = async () => {}) {
   const entries = walkFiles(rootDir);
   if (!entries.length) throw new Error('nothing to archive');
   if (entries.length > 65534) throw new Error(`too many files for a non-zip64 archive (${entries.length})`);
@@ -280,8 +285,10 @@ async function createZip(rootDir, outPath) {
   const write = (buf) => { fs.writeSync(fd, buf); offset += buf.length; };
 
   try {
+    let done = 0;
     for (const rel of entries) {
       await new Promise(r => setImmediate(r));
+      await onProgress(++done, entries.length);
       const abs = path.join(rootDir, rel);
       const stat = fs.statSync(abs);
       const data = fs.readFileSync(abs);
@@ -419,7 +426,7 @@ function renderText(channelLabel, messages) {
   return lines.join('\n');
 }
 
-async function scrapeChannel(channel, job, limits) {
+async function scrapeChannel(channel, job, limits, onProgress = async () => {}) {
   const collected = [];
   // Start the cursor just past the end of the window instead of at "newest".
   let before = job.toTs < Date.now() ? timestampToSnowflake(job.toTs + 1) : null;
@@ -451,6 +458,10 @@ async function scrapeChannel(channel, job, limits) {
 
     before = batch.lastKey();
     job.scanned += batch.size;
+    job.channelMessages = collected.length;
+    // Reported every page, not just once per channel, so a long single-channel
+    // scrape still visibly moves.
+    await onProgress();
 
     if (batch.size < 100) break;
     if (oldestInBatch < job.fromTs) break; // walked past the start of the window
@@ -461,8 +472,10 @@ async function scrapeChannel(channel, job, limits) {
   return collected;
 }
 
-async function downloadMedia(messages, channel, job, mediaRoot, limits) {
+async function downloadMedia(messages, channel, job, mediaRoot, limits, onProgress = async () => {}) {
   const dir = path.join(mediaRoot, `${safeName(channel.name, 'channel')}-${channel.id}`);
+  const pending = messages.reduce((n, m) => n + m.attachments.length, 0);
+  job.mediaPending = pending;
   let saved = 0;
   for (const m of messages) {
     if (job.cancelled) break;
@@ -489,6 +502,7 @@ async function downloadMedia(messages, channel, job, mediaRoot, limits) {
         job.mediaSkipped++;
         job.errors.push(`attachment ${att.name} (${m.id}): ${e.message}`);
       }
+      await onProgress();
     }
   }
   return saved;
@@ -749,14 +763,59 @@ module.exports = {
     };
     jobs.set(guild.id, job);
 
-    // The interaction token dies after 15 minutes; every edit is best-effort and
-    // the DM (a real channel) is the actual delivery path.
+    // Rendered from live job state so any caller gets the current picture without
+    // having to compose a message. The interaction token dies after 15 minutes, so
+    // every edit is best-effort and the DM stays the real delivery path.
+    const STAGE_LABEL = {
+      scraping: 'Scraping messages',
+      media: 'Downloading media',
+      writing: 'Writing files',
+      archiving: 'Building archive',
+      uploading: 'Uploading archive',
+      delivering: 'Sending to your DMs',
+      cleanup: 'Cleaning up'
+    };
+
+    const renderProgress = () => {
+      const elapsed = Math.round((Date.now() - job.startedAt) / 1000);
+      const clock = elapsed < 60 ? `${elapsed}s` : `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`;
+      const bar = (frac) => {
+        const filled = Math.max(0, Math.min(12, Math.round(frac * 12)));
+        return `\`[${'█'.repeat(filled)}${'░'.repeat(12 - filled)}]\``;
+      };
+
+      const lines = [`**Export — ${STAGE_LABEL[job.stage] || job.stage}** · ${clock}`];
+
+      if (job.channelsTotal > 1) {
+        lines.push(`${bar(job.channelsDone / job.channelsTotal)} channels ${job.channelsDone}/${job.channelsTotal}`);
+      }
+      if (job.currentChannel) {
+        const inChannel = job.stage === 'scraping' && job.channelMessages ? ` — ${job.channelMessages} matched here` : '';
+        lines.push(`Current: **#${job.currentChannel}**${inChannel}`);
+      }
+      lines.push(`Messages: **${job.totalMessages + (job.channelMessages || 0)}** collected · ${job.scanned} scanned`);
+      if (withMedia) {
+        const media = `Media: **${job.mediaFiles}** file(s), ${humanBytes(job.mediaBytes)}` +
+          (job.mediaSkipped ? ` · ${job.mediaSkipped} skipped` : '');
+        lines.push(job.stage === 'media' && job.mediaPending
+          ? `${media} (${job.mediaDone || 0}/${job.mediaPending} in this channel)`
+          : media);
+      }
+      if (job.stage === 'archiving' && job.zipTotal) {
+        lines.push(`${bar(job.zipDone / job.zipTotal)} packing ${job.zipDone}/${job.zipTotal} files`);
+      }
+      if (job.stage === 'uploading') lines.push(`Sending ${humanBytes(job.zipSize)} to bashupload.app…`);
+      if (job.hitLimit) lines.push(`_Message cap (${job.limit}) reached — export will be truncated._`);
+      if (job.cancelled) lines.push('_Cancellation requested — stopping after this step._');
+      return lines.join('\n');
+    };
+
     let lastProgress = 0;
-    const progress = async (text) => {
+    const progress = async (force = false) => {
       const now = Date.now();
-      if (now - lastProgress < limits.progressIntervalMs) return;
+      if (!force && now - lastProgress < limits.progressIntervalMs) return;
       lastProgress = now;
-      await interaction.editReply(text).catch(() => {});
+      await interaction.editReply(renderProgress()).catch(() => {});
     };
 
     const windowLabel = `${fromTs === 0 ? 'beginning of history' : new Date(fromTs).toISOString()} → ${new Date(toTs).toISOString()}`;
@@ -770,18 +829,30 @@ module.exports = {
 
       const perChannel = [];
 
+      await progress(true);
+
       for (const ch of channels) {
         if (job.cancelled) break;
-        await progress(`Scraping **#${ch.name}** (${job.channelsDone + 1}/${job.channelsTotal}) — ${job.totalMessages} message(s) so far…`);
+        job.stage = 'scraping';
+        job.currentChannel = ch.name;
+        job.channelMessages = 0;
+        await progress();
 
-        const messages = await scrapeChannel(ch, job, limits);
+        const messages = await scrapeChannel(ch, job, limits, progress);
 
         if (withMedia && messages.length && !job.cancelled) {
-          await progress(`Downloading media from **#${ch.name}** — ${job.mediaFiles} file(s), ${humanBytes(job.mediaBytes)}…`);
-          await downloadMedia(messages, ch, job, mediaRoot, limits);
+          job.stage = 'media';
+          job.mediaDone = 0;
+          await progress(true);
+          await downloadMedia(messages, ch, job, mediaRoot, limits, async () => {
+            job.mediaDone = (job.mediaDone || 0) + 1;
+            await progress();
+          });
         }
 
         job.totalMessages += messages.length;
+        job.channelMessages = 0;
+        job.mediaPending = 0;
         job.channelsDone++;
 
         if (messages.length) {
@@ -871,22 +942,15 @@ module.exports = {
       // ---- archive ----
       job.stage = 'archiving';
       lastProgress = 0;
-      await progress(`Archiving ${job.totalMessages} message(s)…`);
-      const zipInfo = await createZip(workDir, zipPath);
+      await progress(true);
+      const zipInfo = await createZip(workDir, zipPath, async (done, total) => {
+        job.zipDone = done;
+        job.zipTotal = total;
+        await progress();
+      });
+      job.zipSize = zipInfo.size;
 
-      // ---- upload ----
-      job.stage = 'uploading';
-      lastProgress = 0;
-      await progress(`Uploading ${humanBytes(zipInfo.size)} to bashupload.app…`);
-      const { link, via } = await uploadArchive(zipPath, limits.uploadTimeoutMs);
-
-      // Log unconditionally: on a long export the interaction token is already
-      // dead, and a failed DM must not lose the link.
-      console.log(`[export] ${guild.name}: uploaded ${path.basename(zipPath)} (${humanBytes(zipInfo.size)}, via ${via}) -> ${link}`);
-
-      // ---- deliver ----
-      job.stage = 'delivering';
-      const dmBody = [
+      const header = [
         `**Export ready — ${guild.name}**`,
         '',
         `Scope: ${scope}${scope === 'channel' ? ` (#${channels[0]?.name})` : ''}`,
@@ -894,25 +958,78 @@ module.exports = {
         `Window: ${windowLabel}`,
         `Messages: ${job.totalMessages} across ${perChannel.length} channel(s)`,
         withMedia ? `Media: ${job.mediaFiles} file(s), ${humanBytes(job.mediaBytes)}` : 'Media: not included',
-        `Archive: \`${path.basename(zipPath)}\` (${humanBytes(zipInfo.size)}, ${zipInfo.files} files)`,
-        '',
-        `**Single-use download link:**`,
-        link,
-        '',
-        '_The link works once — save the archive immediately. Local copies have been deleted._'
-      ].join('\n');
+        `Archive: \`${path.basename(zipPath)}\` (${humanBytes(zipInfo.size)}, ${zipInfo.files} files)`
+      ];
 
-      try {
-        await interaction.user.send({ content: dmBody });
-      } catch (dmError) {
-        // Delivery failed, so the "then and only then" precondition is unmet:
-        // keep every local file so nothing is lost.
+      // Small archives go straight to Discord — no third party involved, no
+      // expiring link. bashupload is only for what Discord will not accept.
+      const fitsInDm = zipInfo.size <= limits.directAttachmentMaxBytes;
+      let delivered = false;
+      let deliveryNote = '';
+
+      if (fitsInDm) {
+        job.stage = 'delivering';
+        await progress(true);
+        try {
+          await interaction.user.send({
+            content: [...header, '', '_Archive attached directly — nothing was uploaded to any third-party host._'].join('\n'),
+            files: [{ attachment: zipPath, name: path.basename(zipPath) }]
+          });
+          delivered = true;
+          deliveryNote = 'attached to your DM directly';
+          console.log(`[export] ${guild.name}: delivered ${path.basename(zipPath)} (${humanBytes(zipInfo.size)}) as a DM attachment`);
+        } catch (attachError) {
+          // Discord refused it (size ceiling differs per server tier) — fall
+          // through to the upload path rather than failing the export.
+          console.warn(`[export] direct attachment failed (${attachError.message}); falling back to bashupload.app`);
+          job.errors.push(`direct DM attachment failed: ${attachError.message}`);
+        }
+      }
+
+      if (!delivered) {
+        // ---- upload ----
+        job.stage = 'uploading';
+        lastProgress = 0;
+        await progress(true);
+        const uploaded = await uploadArchive(zipPath, limits.uploadTimeoutMs);
+
+        // Log unconditionally: on a long export the interaction token is already
+        // dead, and a failed DM must not lose the response.
+        console.log(`[export] ${guild.name}: uploaded ${path.basename(zipPath)} (${humanBytes(zipInfo.size)}, via ${uploaded.via}) — response:\n${uploaded.raw}`);
+
+        job.stage = 'delivering';
+        await progress(true);
+        try {
+          await interaction.user.send({
+            content: [
+              ...header,
+              '',
+              `Too large to attach (limit ${humanBytes(limits.directAttachmentMaxBytes)}), so it went to bashupload.app.`,
+              '**Raw response from the upload — the download link is single use:**',
+              '```',
+              uploaded.raw.slice(0, 1500),
+              '```'
+            ].join('\n')
+          });
+          delivered = true;
+          deliveryNote = 'uploaded to bashupload.app, response sent to your DMs';
+        } catch (dmError) {
+          // Delivery failed, so the "then and only then" precondition is unmet:
+          // keep every local file so nothing is lost.
+          job.stage = 'dm-failed';
+          jobs.delete(guild.id);
+          console.error(`[export] DM to ${interaction.user.tag} failed: ${dmError.message}. Files kept at ${workDir}. Response was:\n${uploaded.raw}`);
+          await interaction.editReply(
+            `Upload succeeded but I could not DM you (${dmError.message}). Local files were **kept** at \`${workDir}\`.\n\`\`\`\n${uploaded.raw.slice(0, 1500)}\n\`\`\``
+          ).catch(() => {});
+          return;
+        }
+      }
+
+      if (!delivered) {
         job.stage = 'dm-failed';
         jobs.delete(guild.id);
-        console.error(`[export] DM to ${interaction.user.tag} failed: ${dmError.message}. Link: ${link}. Files kept at ${workDir}`);
-        await interaction.editReply(
-          `Upload succeeded but I could not DM you (${dmError.message}). Local files were **kept** at \`${workDir}\`.\nLink: ${link}`
-        ).catch(() => {});
+        await interaction.editReply(`Could not deliver the export. Local files were **kept** at \`${workDir}\`.`).catch(() => {});
         return;
       }
 
@@ -923,9 +1040,12 @@ module.exports = {
       cleanedUp = true;
 
       jobs.delete(guild.id);
-      await interaction.editReply(
-        `Export complete — ${job.totalMessages} message(s), ${humanBytes(zipInfo.size)} archive uploaded and the single-use link sent to your DMs. Local copies deleted.`
-      ).catch(() => {});
+      await interaction.editReply([
+        `**Export complete** — ${job.totalMessages} message(s) across ${perChannel.length} channel(s).`,
+        `Archive: \`${path.basename(zipPath)}\` (${humanBytes(zipInfo.size)}, ${zipInfo.files} files) — ${deliveryNote}.`,
+        withMedia ? `Media: ${job.mediaFiles} file(s), ${humanBytes(job.mediaBytes)}.` : '',
+        'Local copies deleted.'
+      ].filter(Boolean).join('\n')).catch(() => {});
     } catch (e) {
       jobs.delete(guild.id);
       console.error('[export] failed:', e);

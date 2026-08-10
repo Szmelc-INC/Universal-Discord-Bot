@@ -27,7 +27,7 @@ Modules can be:
 
 ### Moderation & Utilities
 - `dm` — Send direct messages as the bot
-- `export` — Scrape & export messages to a zip, upload it, DM a single-use link
+- `export` — Scrape & export messages to a zip, delivered by DM (attached, or via bashupload when large)
 - `file_upload` — Upload local files from the host to Discord
 - `rm` (shredder) — Advanced message cleanup with time windows and backup
 - `role_manager` — Add, remove, and list roles on users
@@ -184,10 +184,16 @@ Requires `ManageMessages` permission (and bot admin).
 **File:** `export.js`
 **Working directory:** `exports/` (git-ignored, created on demand, emptied on success)
 
-Configurable message scraper. Collects messages into a local working folder, archives it, uploads
-the archive to [bashupload.app](https://bashupload.app), DMs the resulting **single-use** download
-link to whoever ran the command, and only then deletes the local copy. **Admin only**
+Configurable message scraper. Collects messages into a local working folder, archives it, delivers
+the archive to whoever ran the command by DM, and only then deletes the local copy. **Admin only**
 (`client.isAdmin`), guild-only.
+
+**Delivery depends on size.** Archives of **10 MiB or less are attached to the DM directly** — no
+third-party host, no expiring link. Anything larger is uploaded to
+[bashupload.app](https://bashupload.app) and the DM carries the service's **raw response verbatim
+in a code block**, single-use download link included. The response is never reformatted or
+rewritten, so what the DM shows is exactly what the host returned. If Discord refuses the direct
+attachment (per-server size tiers vary), the module falls back to the upload path automatically.
 
 **Subcommands:**
 - `/export run [options]` — run an export
@@ -222,9 +228,13 @@ export-<date>.zip
 ```
 
 **Behaviour worth knowing:**
+- **Progress updates live.** The ephemeral reply is rewritten as the job runs — stage, elapsed
+  time, a channel progress bar, messages collected vs scanned, media counters and a packing bar
+  during archiving. Updates are emitted per history page and per downloaded attachment, throttled
+  to one edit every `progressIntervalMs` (5 s) to stay inside Discord's rate limits.
 - **Deletion is conditional.** Local files are removed only after the DM is delivered. If the DM
-  fails (closed DMs, error 50007), the archive is **kept** on the host and the link is written to
-  the console and to the ephemeral reply — nothing is lost.
+  fails (closed DMs, error 50007), the archive is **kept** on the host and the upload response is
+  written to the console and to the ephemeral reply — nothing is lost.
 - **Long exports outlive the interaction.** Discord invalidates an interaction token after 15
   minutes, so all progress edits are best-effort and the DM is the real delivery channel. A
   multi-hour global export still delivers.
@@ -248,6 +258,7 @@ neither `zip` nor `curl`.
 
 | Key | Meaning | Default |
 |-----|---------|---------|
+| `directAttachmentMaxBytes` | archives up to this size are DM'd directly instead of uploaded | `10485760` (10 MiB) |
 | `maxMessages` | default message cap | `50000` |
 | `maxAttachmentBytes` | per-attachment size limit | `26214400` (25 MB) |
 | `maxMediaTotalBytes` | total media budget per export | `536870912` (512 MB) |
@@ -255,7 +266,8 @@ neither `zip` nor `curl`.
 | `progressIntervalMs` | progress-edit throttle | `5000` |
 | `uploadTimeoutMs` | upload timeout | `1800000` (30 min) |
 
-> The download link is **single use** — bashupload deletes the file after the first download.
+> When bashupload is used, the download link is **single use** — the file is deleted after the
+> first download. Archives that fit in a DM avoid this entirely.
 
 ---
 
