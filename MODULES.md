@@ -213,8 +213,54 @@ users, no media, since the beginning of history):
 | `from` | window start — ISO date or relative (`7d`); overrides `since` | — |
 | `to` | window end — ISO date, relative (`2h`), or `now` | `now` |
 | `format` | `both`, `json`, `txt` | `both` |
+| `replies` | `context`, `plain`, `skip` — see below | `context` |
 | `threads` | `true` / `false` — also scrape **active** threads and forum posts | `false` |
 | `limit` | safety cap on total messages (1–500000) | `50000` |
+
+**Reply handling (`replies`):**
+
+| Value | Effect |
+|-------|--------|
+| `context` *(default)* | Reply messages carry the message they answer **plus its whole unbroken run** |
+| `plain` | Reply messages are kept as-is; only the referenced id is recorded |
+| `skip` | Reply messages are left out of the export entirely |
+
+`context` exists so a filtered export stays readable. Exporting one user's messages normally
+strips away everything they were answering; with `context` each reply carries the other side of the
+conversation with it.
+
+The quoted block is not just the single clicked message. Starting from the replied-to message, the
+run extends **in both directions** for as long as the same author keeps speaking, and stops at the
+first message by anyone else — so a burst of five messages quoted from the middle brings back all
+five. Runs are followed across history pages, capped at `maxReplyRunMessages` (50) and marked
+`truncated` when the cap bites.
+
+Each resolved run is cached against every message in it, so several replies into the same burst cost
+one lookup. Replies whose target was deleted, aged out, or lives in another channel are recorded as
+`resolved: false` with a reason rather than silently dropped.
+
+In JSON this lands on the message as `replyContext`:
+
+```json
+"replyTo": "1000000000000000003",
+"replyContext": {
+  "messageId": "1000000000000000003",
+  "resolved": true,
+  "truncated": false,
+  "author": { "id": "…", "tag": "bob#0001" },
+  "messages": [ { "…": "the full unbroken run, oldest first" } ]
+}
+```
+
+In the transcript it is rendered as quoted lines above the reply:
+
+```
+  > in reply to bob#0001 (bob) — 3 message(s) in an unbroken run:
+  >   [2026-08-01T10:00:02.000Z] first line of the burst
+  >   [2026-08-01T10:00:03.000Z] the message actually replied to
+  >   [2026-08-01T10:00:04.000Z] last line of the burst
+[2026-08-01T10:00:06.000Z] target#0001 (…): the reply itself
+```
 
 **Archive layout:**
 
@@ -262,6 +308,9 @@ neither `zip` nor `curl`.
 | `maxMessages` | default message cap | `50000` |
 | `maxAttachmentBytes` | per-attachment size limit | `26214400` (25 MB) |
 | `maxMediaTotalBytes` | total media budget per export | `536870912` (512 MB) |
+| `maxReplyRunMessages` | longest same-author run quoted as reply context | `50` |
+| `maxReplyExtendPages` | extra history pages per direction when following a run | `3` |
+| `maxReplyLookups` | reply-context API lookups per export | `2000` |
 | `fetchDelayMs` | pause between history pages | `250` |
 | `progressIntervalMs` | progress-edit throttle | `5000` |
 | `uploadTimeoutMs` | upload timeout | `1800000` (30 min) |
