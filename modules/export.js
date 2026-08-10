@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, ChannelType, PermissionFlagsBits, MessageFlags } = require('discord.js');
+const { SlashCommandBuilder, ChannelType, PermissionFlagsBits, MessageFlags, MessageType } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
@@ -18,6 +18,11 @@ const DEFAULTS = {
   maxMessages: 50000,
   maxAttachmentBytes: 25 * 1024 * 1024,
   maxMediaTotalBytes: 512 * 1024 * 1024,
+  // Reply context: how far a same-author run may be followed, and how many extra
+  // history pages may be pulled per direction when a run runs off the window.
+  maxReplyRunMessages: 50,
+  maxReplyExtendPages: 3,
+  maxReplyLookups: 2000,
   fetchDelayMs: 250,
   progressIntervalMs: 5000,
   uploadTimeoutMs: 30 * 60 * 1000
@@ -386,6 +391,7 @@ function serializeMessage(msg) {
     },
     content: msg.content || '',
     replyTo: msg.reference?.messageId || null,
+    replyContext: null,
     attachments: [...msg.attachments.values()].map(a => ({
       id: a.id,
       name: a.name,
@@ -409,9 +415,152 @@ function serializeMessage(msg) {
   };
 }
 
+function isReply(msg) {
+  // reference is also set for crossposts and pins; only true replies count.
+  return msg.type === MessageType.Reply && Boolean(msg.reference?.messageId);
+}
+
+function sortAsc(list) {
+  return list.sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
+}
+
+// The replied-to message plus every message directly around it by the same
+// author, walked in both directions until somebody else speaks. A burst of
+// messages is one thought, so quoting only the clicked line loses the point.
+async function fetchSameAuthorRun(channel, refMsg, limits, job) {
+  const authorId = refMsg.author?.id;
+  const maxRun = limits.maxReplyRunMessages;
+
+  const around = await channel.messages.fetch({ around: refMsg.id, limit: 100 }).catch(() => null);
+  job.replyLookups++;
+  let ordered = around && around.size ? sortAsc([...around.values()]) : [refMsg];
+  let idx = ordered.findIndex(m => m.id === refMsg.id);
+  if (idx === -1) { ordered = [refMsg]; idx = 0; }
+
+  const run = [ordered[idx]];
+
+  let left = idx - 1;
+  while (left >= 0 && ordered[left].author?.id === authorId && run.length < maxRun) {
+    run.unshift(ordered[left]);
+    left--;
+  }
+  let openLeft = left < 0;
+
+  let right = idx + 1;
+  while (right < ordered.length && ordered[right].author?.id === authorId && run.length < maxRun) {
+    run.push(ordered[right]);
+    right++;
+  }
+  let openRight = right >= ordered.length;
+
+  // The run reached the edge of the fetched window, so it may continue beyond it.
+  let pages = 0;
+  while (openLeft && run.length < maxRun && pages < limits.maxReplyExtendPages) {
+    const older = await channel.messages.fetch({ before: run[0].id, limit: 100 }).catch(() => null);
+    job.replyLookups++;
+    pages++;
+    if (!older || !older.size) break;
+    const asc = sortAsc([...older.values()]);
+    let i = asc.length - 1;
+    let added = 0;
+    while (i >= 0 && asc[i].author?.id === authorId && run.length < maxRun) {
+      run.unshift(asc[i]);
+      i--;
+      added++;
+    }
+    if (i >= 0 || added === 0) { openLeft = false; break; }
+  }
+
+  pages = 0;
+  while (openRight && run.length < maxRun && pages < limits.maxReplyExtendPages) {
+    const newer = await channel.messages.fetch({ after: run[run.length - 1].id, limit: 100 }).catch(() => null);
+    job.replyLookups++;
+    pages++;
+    if (!newer || !newer.size) break;
+    const asc = sortAsc([...newer.values()]);
+    let i = 0;
+    let added = 0;
+    while (i < asc.length && asc[i].author?.id === authorId && run.length < maxRun) {
+      run.push(asc[i]);
+      i++;
+      added++;
+    }
+    if (i < asc.length || added === 0) { openRight = false; break; }
+  }
+
+  return { run, truncated: run.length >= maxRun };
+}
+
+async function resolveReplyContexts(channel, pending, job, limits, onProgress) {
+  for (const item of pending) {
+    if (job.cancelled) break;
+    if (job.replyLookups >= limits.maxReplyLookups) {
+      job.replyBudgetHit = true;
+      break;
+    }
+    // Replies pointing at another channel are left unresolved rather than
+    // silently pulling messages the export was never scoped to.
+    if (item.refChannelId && item.refChannelId !== channel.id) {
+      item.entry.replyContext = { messageId: item.refId, resolved: false, reason: 'reply targets another channel', messages: [] };
+      continue;
+    }
+
+    const cached = job.replyCache.get(item.refId);
+    if (cached) {
+      item.entry.replyContext = cached;
+      job.replyContextReused++;
+      continue;
+    }
+
+    let refMsg = null;
+    try {
+      refMsg = await channel.messages.fetch(item.refId);
+      job.replyLookups++;
+    } catch {
+      const miss = { messageId: item.refId, resolved: false, reason: 'referenced message unavailable (deleted or too old)', messages: [] };
+      job.replyCache.set(item.refId, miss);
+      item.entry.replyContext = miss;
+      job.replyUnresolved++;
+      continue;
+    }
+
+    const { run, truncated } = await fetchSameAuthorRun(channel, refMsg, limits, job);
+    const context = {
+      messageId: item.refId,
+      resolved: true,
+      truncated,
+      author: {
+        id: refMsg.author?.id || null,
+        tag: refMsg.author?.tag || null
+      },
+      messages: run.map(serializeMessage)
+    };
+    // Every message in the run answers for the whole run, so a second reply
+    // into the same burst costs nothing.
+    for (const m of run) job.replyCache.set(m.id, context);
+    item.entry.replyContext = context;
+    job.replyContextMessages += run.length;
+    await onProgress();
+  }
+}
+
 function renderText(channelLabel, messages) {
   const lines = [`# ${channelLabel}`, `# ${messages.length} message(s), oldest first`, ''];
   for (const m of messages) {
+    const ctx = m.replyContext;
+    if (ctx) {
+      if (!ctx.resolved) {
+        lines.push(`  > in reply to ${ctx.messageId} — ${ctx.reason}`);
+      } else {
+        const who = ctx.author?.tag || 'unknown';
+        lines.push(`  > in reply to ${who} (${ctx.author?.id || '?'}) — ${ctx.messages.length} message(s) in an unbroken run:`);
+        for (const q of ctx.messages) {
+          lines.push(`  >   [${q.timestamp}] ${q.content}`);
+          for (const a of q.attachments) lines.push(`  >     [attachment] ${a.name}`);
+        }
+        if (ctx.truncated) lines.push('  >   … run truncated at the configured limit');
+      }
+    }
     lines.push(`[${m.timestamp}] ${m.author.tag || 'unknown'} (${m.author.id || '?'}): ${m.content}`);
     for (const a of m.attachments) {
       lines.push(`    [attachment] ${a.name} (${humanBytes(a.size)})${a.savedAs ? ` -> ${a.savedAs}` : ''} ${a.url}`);
@@ -428,6 +577,7 @@ function renderText(channelLabel, messages) {
 
 async function scrapeChannel(channel, job, limits, onProgress = async () => {}) {
   const collected = [];
+  const pendingReplies = [];
   // Start the cursor just past the end of the window instead of at "newest".
   let before = job.toTs < Date.now() ? timestampToSnowflake(job.toTs + 1) : null;
 
@@ -452,7 +602,13 @@ async function scrapeChannel(channel, job, limits, onProgress = async () => {}) 
       oldestInBatch = Math.min(oldestInBatch, msg.createdTimestamp);
       if (msg.createdTimestamp < job.fromTs || msg.createdTimestamp > job.toTs) continue;
       if (job.userId && msg.author?.id !== job.userId) continue;
-      collected.push(serializeMessage(msg));
+      const replyLike = isReply(msg);
+      if (replyLike && job.replyMode === 'skip') { job.repliesSkipped++; continue; }
+      const entry = serializeMessage(msg);
+      collected.push(entry);
+      if (replyLike && job.replyMode === 'context') {
+        pendingReplies.push({ entry, refId: msg.reference.messageId, refChannelId: msg.reference.channelId });
+      }
       if (job.totalMessages + collected.length >= job.limit) { job.hitLimit = true; break; }
     }
 
@@ -469,6 +625,19 @@ async function scrapeChannel(channel, job, limits, onProgress = async () => {}) 
   }
 
   collected.reverse(); // oldest first
+
+  if (pendingReplies.length && !job.cancelled) {
+    job.stage = 'replies';
+    job.replyPending = pendingReplies.length;
+    job.replyDone = 0;
+    await onProgress(true);
+    await resolveReplyContexts(channel, pendingReplies, job, limits, async () => {
+      job.replyDone++;
+      await onProgress();
+    });
+    job.replyPending = 0;
+  }
+
   return collected;
 }
 
@@ -569,6 +738,14 @@ module.exports = {
           { name: 'json', value: 'json' },
           { name: 'txt', value: 'txt' }
         ))
+      .addStringOption(o => o
+        .setName('replies')
+        .setDescription('How replies are handled (default: include the message replied to)')
+        .addChoices(
+          { name: 'context — include the message replied to + its unbroken run (default)', value: 'context' },
+          { name: 'replies — keep replies as-is, no quoted context', value: 'plain' },
+          { name: 'skip replies — leave reply messages out entirely', value: 'skip' }
+        ))
       .addBooleanOption(o => o
         .setName('threads')
         .setDescription('Also scrape active threads (default: false)'))
@@ -642,6 +819,7 @@ module.exports = {
     const targetUser = interaction.options.getUser('user');
     const withMedia = interaction.options.getBoolean('media') || false;
     const includeThreads = interaction.options.getBoolean('threads') || false;
+    const replyMode = interaction.options.getString('replies') || 'context';
     const format = interaction.options.getString('format') || 'both';
     const maxMessages = interaction.options.getInteger('limit') || limits.maxMessages;
 
@@ -759,6 +937,14 @@ module.exports = {
       mediaSkipped: 0,
       mediaBudgetHit: false,
       hitLimit: false,
+      replyMode,
+      replyCache: new Map(),
+      replyLookups: 0,
+      replyContextMessages: 0,
+      replyContextReused: 0,
+      replyUnresolved: 0,
+      repliesSkipped: 0,
+      replyBudgetHit: false,
       errors: preErrors
     };
     jobs.set(guild.id, job);
@@ -768,6 +954,7 @@ module.exports = {
     // every edit is best-effort and the DM stays the real delivery path.
     const STAGE_LABEL = {
       scraping: 'Scraping messages',
+      replies: 'Resolving reply context',
       media: 'Downloading media',
       writing: 'Writing files',
       archiving: 'Building archive',
@@ -800,6 +987,13 @@ module.exports = {
         lines.push(job.stage === 'media' && job.mediaPending
           ? `${media} (${job.mediaDone || 0}/${job.mediaPending} in this channel)`
           : media);
+      }
+      if (job.stage === 'replies' && job.replyPending) {
+        lines.push(`${bar(job.replyDone / job.replyPending)} reply context ${job.replyDone}/${job.replyPending} · ${job.replyContextMessages} quoted message(s)`);
+      } else if (replyMode === 'context' && job.replyContextMessages) {
+        lines.push(`Reply context: ${job.replyContextMessages} quoted message(s)`);
+      } else if (replyMode === 'skip' && job.repliesSkipped) {
+        lines.push(`Replies skipped: ${job.repliesSkipped}`);
       }
       if (job.stage === 'archiving' && job.zipTotal) {
         lines.push(`${bar(job.zipDone / job.zipTotal)} packing ${job.zipDone}/${job.zipTotal} files`);
@@ -897,6 +1091,14 @@ module.exports = {
           channel: scope === 'channel' ? channels[0]?.id : null,
           user: targetUser ? { id: targetUser.id, tag: targetUser.tag } : 'all users',
           media: withMedia,
+          replies: {
+            mode: replyMode,
+            meaning: {
+              context: 'reply messages carry the message replied to plus its unbroken same-author run',
+              plain: 'reply messages kept as-is, no quoted context',
+              skip: 'reply messages excluded from the export'
+            }[replyMode]
+          },
           threads: includeThreads
             ? 'active threads and forum posts included; archived threads excluded'
             : 'text channels only (threads and forum posts excluded)',
@@ -912,8 +1114,13 @@ module.exports = {
           mediaFiles: job.mediaFiles,
           mediaBytes: job.mediaBytes,
           mediaSkipped: job.mediaSkipped,
+          replyContextMessages: job.replyContextMessages,
+          replyContextReused: job.replyContextReused,
+          replyContextUnresolved: job.replyUnresolved,
+          repliesSkipped: job.repliesSkipped,
           messageLimitReached: job.hitLimit,
-          mediaBudgetReached: job.mediaBudgetHit
+          mediaBudgetReached: job.mediaBudgetHit,
+          replyLookupBudgetReached: job.replyBudgetHit
         },
         channels: perChannel,
         errors: job.errors.slice(0, 200)
@@ -931,9 +1138,13 @@ module.exports = {
         `Window:    ${windowLabel}`,
         `Media:     ${withMedia ? `yes — ${job.mediaFiles} file(s), ${humanBytes(job.mediaBytes)}` : 'no'}`,
         `Threads:   ${manifest.configuration.threads}`,
+        `Replies:   ${manifest.configuration.replies.meaning}`,
         ``,
         `Messages:  ${job.totalMessages} across ${perChannel.length} channel(s)`,
+        replyMode === 'context' && job.replyContextMessages ? `Quoted:    ${job.replyContextMessages} message(s) of reply context${job.replyUnresolved ? ` (${job.replyUnresolved} unresolved)` : ''}` : '',
+        replyMode === 'skip' && job.repliesSkipped ? `Skipped:   ${job.repliesSkipped} reply message(s)` : '',
         job.hitLimit ? `NOTE: the ${maxMessages} message safety cap was reached — the export is truncated.` : '',
+        job.replyBudgetHit ? `NOTE: the reply-context lookup budget was reached — later replies have no quoted context.` : '',
         job.mediaBudgetHit ? `NOTE: the media size budget was reached — some attachments were skipped.` : '',
         job.errors.length ? `\nErrors (${job.errors.length}):\n${job.errors.slice(0, 50).map(e => `  - ${e}`).join('\n')}` : ''
       ].filter(Boolean).join('\n');
@@ -958,6 +1169,11 @@ module.exports = {
         `Window: ${windowLabel}`,
         `Messages: ${job.totalMessages} across ${perChannel.length} channel(s)`,
         withMedia ? `Media: ${job.mediaFiles} file(s), ${humanBytes(job.mediaBytes)}` : 'Media: not included',
+        replyMode === 'context'
+          ? `Replies: ${job.replyContextMessages} quoted message(s) of context`
+          : replyMode === 'skip'
+            ? `Replies: ${job.repliesSkipped} skipped`
+            : 'Replies: kept without context',
         `Archive: \`${path.basename(zipPath)}\` (${humanBytes(zipInfo.size)}, ${zipInfo.files} files)`
       ];
 
@@ -1057,6 +1273,7 @@ module.exports = {
   // Exposed for tests / manual verification; not used by the command path.
   _internals: {
     createZip, crc32, extractLink, resolveInstant, timestampToSnowflake,
-    safeName, humanBytes, putFile, uploadArchive, removeInsideExportBase, EXPORT_BASE
+    safeName, humanBytes, putFile, uploadArchive, removeInsideExportBase, EXPORT_BASE,
+    isReply, fetchSameAuthorRun, resolveReplyContexts, renderText, DEFAULTS
   }
 };
