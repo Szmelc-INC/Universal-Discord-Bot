@@ -4,7 +4,7 @@
 ---
 
 ## Modules
-- Message scrapper (scrape & export messages by user / channel / server -> into .zip/.7z archives)
+- [x] Message scrapper (scrape & export messages by user / channel / server -> into .zip archives) -> `/export`
 - Message search (by regex, wildards or other filters -> message link)- LLM bridge (AI integrations, either local or via API)
 - User info (Advanced verbose user stats, everything it can see)
 - Server info (Advanced verbose server stats, everything there is)
@@ -14,6 +14,6 @@
 - Browse Together (open up browser on my CORS proxy to google.com with adblocks as a voice channel activity type that people can join and user who started controls it. can watch movies, memes etc)
 - Proper Activities module (open up szmelc.com on some page to play with)
 - Master-Slave Module to deploy & manage other bots 
-- Bashupload.app file hosting module
+- [x] Bashupload.app file hosting module (implemented as the upload stage of `/export`)
 - Webscrapers module (pass URL, and scrape all text (md/json) or url' s from the page)
 - Recursive Loops service (schedule repeatable tasks like use some other module/command on X channel, every Y minutes. (for example /shell uptime)
