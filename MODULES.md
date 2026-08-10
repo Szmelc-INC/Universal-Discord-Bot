@@ -27,6 +27,7 @@ Modules can be:
 
 ### Moderation & Utilities
 - `dm` — Send direct messages as the bot
+- `export` — Scrape & export messages to a zip, delivered by DM (attached, or via bashupload when large)
 - `file_upload` — Upload local files from the host to Discord
 - `rm` (shredder) — Advanced message cleanup with time windows and backup
 - `role_manager` — Add, remove, and list roles on users
@@ -179,6 +180,97 @@ Requires `ManageMessages` permission (and bot admin).
 
 ---
 
+### `/export`
+**File:** `export.js`
+**Working directory:** `exports/` (git-ignored, created on demand, emptied on success)
+
+Configurable message scraper. Collects messages into a local working folder, archives it, delivers
+the archive to whoever ran the command by DM, and only then deletes the local copy. **Admin only**
+(`client.isAdmin`), guild-only.
+
+**Delivery depends on size.** Archives of **10 MiB or less are attached to the DM directly** — no
+third-party host, no expiring link. Anything larger is uploaded to
+[bashupload.app](https://bashupload.app) and the DM carries the service's **raw response verbatim
+in a code block**, single-use download link included. The response is never reformatted or
+rewritten, so what the DM shows is exactly what the host returned. If Discord refuses the direct
+attachment (per-server size tiers vary), the module falls back to the upload path automatically.
+
+**Subcommands:**
+- `/export run [options]` — run an export
+- `/export status` — progress of the export running in this server
+- `/export cancel` — stop it; partial files are removed and nothing is uploaded
+
+**`/export run` options** (every one is optional — the defaults export the current channel, all
+users, no media, since the beginning of history):
+
+| Option | Values | Default |
+|--------|--------|---------|
+| `scope` | `channel`, `global` (every readable channel in the server) | `channel` |
+| `channel` | any text channel (`scope=channel` only) | the current channel |
+| `user` | a user to filter on | all users |
+| `media` | `true` / `false` — download attachments into the archive | `false` |
+| `since` | `24h`, `7d`, `30m`, an ISO date, or `beginning` | `beginning` |
+| `from` | window start — ISO date or relative (`7d`); overrides `since` | — |
+| `to` | window end — ISO date, relative (`2h`), or `now` | `now` |
+| `format` | `both`, `json`, `txt` | `both` |
+| `threads` | `true` / `false` — also scrape **active** threads and forum posts | `false` |
+| `limit` | safety cap on total messages (1–500000) | `50000` |
+
+**Archive layout:**
+
+```
+export-<date>.zip
+├── manifest.json                  # configuration, totals, per-channel counts, errors
+├── summary.txt                    # human-readable report
+├── channels/<name>-<id>.json      # full message records
+├── channels/<name>-<id>.txt       # flat transcript
+└── media/<name>-<id>/...          # attachments (only with media:true)
+```
+
+**Behaviour worth knowing:**
+- **Progress updates live.** The ephemeral reply is rewritten as the job runs — stage, elapsed
+  time, a channel progress bar, messages collected vs scanned, media counters and a packing bar
+  during archiving. Updates are emitted per history page and per downloaded attachment, throttled
+  to one edit every `progressIntervalMs` (5 s) to stay inside Discord's rate limits.
+- **Deletion is conditional.** Local files are removed only after the DM is delivered. If the DM
+  fails (closed DMs, error 50007), the archive is **kept** on the host and the upload response is
+  written to the console and to the ephemeral reply — nothing is lost.
+- **Long exports outlive the interaction.** Discord invalidates an interaction token after 15
+  minutes, so all progress edits are best-effort and the DM is the real delivery channel. A
+  multi-hour global export still delivers.
+- **Timeframes use snowflake cursors,** so `since: 2h` fetches only that slice instead of walking
+  the whole channel history.
+- **Permissions:** a channel is included when the bot has `View Channel` + `Read Message History`
+  (deliberately *not* `Manage Messages` — exporting only reads). The command's
+  `setDefaultMemberPermissions` is only a visibility hint set to `Manage Server`; real
+  authorization is `client.isAdmin`, so `config.adminRoles` members are not locked out by Discord
+  before the check runs.
+- Threads and forum posts are excluded unless `threads: true`. Only *active* threads are covered —
+  archived threads are never scraped. The manifest records which of the two applied. Selecting a
+  forum channel directly requires `threads: true`, since a forum holds no messages of its own.
+- One export at a time per server.
+
+**No external binaries required.** The archive is written by a built-in ZIP writer and the upload
+falls back to a native HTTPS `PUT` when `curl` is missing — the `node:22-alpine` image ships
+neither `zip` nor `curl`.
+
+**Optional tuning** via a `export` block in `config.json`:
+
+| Key | Meaning | Default |
+|-----|---------|---------|
+| `directAttachmentMaxBytes` | archives up to this size are DM'd directly instead of uploaded | `10485760` (10 MiB) |
+| `maxMessages` | default message cap | `50000` |
+| `maxAttachmentBytes` | per-attachment size limit | `26214400` (25 MB) |
+| `maxMediaTotalBytes` | total media budget per export | `536870912` (512 MB) |
+| `fetchDelayMs` | pause between history pages | `250` |
+| `progressIntervalMs` | progress-edit throttle | `5000` |
+| `uploadTimeoutMs` | upload timeout | `1800000` (30 min) |
+
+> When bashupload is used, the download link is **single use** — the file is deleted after the
+> first download. Archives that fit in a DM avoid this entirely.
+
+---
+
 ### `/music`
 **File:** `music.js`
 
@@ -311,6 +403,7 @@ Several modules depend on external tools being installed on the host:
 | `yt`       | `yt-dlp`             | Required for search + downloads    |
 | `music`    | `yt-dlp` + FFmpeg    | Voice playback                     |
 | `shredder` | —                    | Needs `ManageMessages` permission  |
+| `export`   | — (`curl` optional)  | Built-in zip + native HTTPS upload |
 | `webhooks` | `ManageWebhooks`     | Discord permission                 |
 | `ollama`   | Ollama server        | Local LLM API (`/api/chat`)        |
 
