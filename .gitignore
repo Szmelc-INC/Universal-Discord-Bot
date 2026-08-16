@@ -24,6 +24,9 @@ Thumbs.db
 *.swp
 *~
 
+# Democracy module runtime state (active votes / history / DM subscriptions)
+config/democracy-state.json
+
 # Dev only
 .vscode/
 .idea/

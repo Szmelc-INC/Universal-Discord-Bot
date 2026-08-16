@@ -1,0 +1,39 @@
+{
+  "enabled": true,
+  "voteChannelId": null,
+  "createEvents": true,
+  "notifyDefault": false,
+  "adminUserIds": [],
+  "adminRoleIds": [],
+  "protected": {
+    "userIds": [],
+    "roleIds": []
+  },
+  "passRatio": 0.5,
+  "activeMemberRatio": 0.05,
+  "forbiddenPermissions": ["Administrator"],
+  "defaults": {
+    "minVotes": 3,
+    "minDurationSec": 1800,
+    "maxDurationSec": 604800
+  },
+  "categories": {
+    "ban":                { "minVotes": 13, "minDurationSec": 86400, "maxDurationSec": 604800 },
+    "unban":              { "minVotes": 7,  "minDurationSec": 3600,  "maxDurationSec": 259200 },
+    "kick":               { "minVotes": 7,  "minDurationSec": 3600,  "maxDurationSec": 259200 },
+    "timeout":            { "minVotes": 3,  "minDurationSec": 300,   "maxDurationSec": 3600 },
+    "untimeout":          { "minVotes": 3,  "minDurationSec": 300,   "maxDurationSec": 3600 },
+    "role_create":        { "minVotes": 7,  "minDurationSec": 3600,  "maxDurationSec": 604800 },
+    "role_delete":        { "minVotes": 13, "minDurationSec": 3600,  "maxDurationSec": 1209600 },
+    "role_assign":        { "minVotes": 5,  "minDurationSec": 1800,  "maxDurationSec": 604800 },
+    "role_permission":    { "minVotes": 7,  "minDurationSec": 3600,  "maxDurationSec": 604800 },
+    "role_setting":       { "minVotes": 5,  "minDurationSec": 1800,  "maxDurationSec": 604800 },
+    "channel_create":     { "minVotes": 7,  "minDurationSec": 3600,  "maxDurationSec": 604800 },
+    "channel_delete":     { "minVotes": 13, "minDurationSec": 3600,  "maxDurationSec": 1209600 },
+    "channel_permission": { "minVotes": 5,  "minDurationSec": 3600,  "maxDurationSec": 604800 },
+    "channel_setting":    { "minVotes": 5,  "minDurationSec": 1800,  "maxDurationSec": 604800 },
+    "server":             { "minVotes": 13, "minDurationSec": 3600,  "maxDurationSec": 604800 },
+    "emoji":              { "minVotes": 5,  "minDurationSec": 1800,  "maxDurationSec": 604800 },
+    "sticker":            { "minVotes": 5,  "minDurationSec": 1800,  "maxDurationSec": 604800 }
+  }
+}
