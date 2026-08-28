@@ -146,9 +146,10 @@ Execute commands on the host machine.
 
 **Usage:**
 - `/shell <command>`
+- `/shell` (no argument) — admins get a modal to type the full command; everyone else gets a select menu scoped to the safe whitelist, with a follow-up modal for commands that take text input
 
 **Behavior:**
-- Normal users: Limited to a safe whitelist (`figlet`, `toilet`, `cowsay`, `fortune`, `uptime`)
+- Normal users: Limited to a safe whitelist (`figlet`, `toilet`, `cowsay`, `fortune`, `uptime`), always run via `execFile` (never a shell) so no argument — typed or via modal — can inject shell syntax
 - Admins: Full unrestricted shell access
 
 Includes execution timeouts and output length protection.
@@ -215,6 +216,8 @@ YouTube tools.
 - `/yt mp4 <url>` (Admin)
 
 Uses yt-dlp under the hood. Downloads are restricted to admins. The downloaded file is attached to the same message the command replied with (progress → file), never a separate upload message.
+
+**Cookies:** defaults to `yt-dlp --cookies-from-browser firefox`, falling through `chrome`, `chromium`, `brave`, `edge`, `vivaldi`, `opera` (first one with a detected profile directory on the host wins), then a `cookies.txt` file at the repo root if present, then no cookies at all. No configuration needed — just have one of those browsers' profile present on the host (or drop a `cookies.txt`) if age-restricted/region-locked videos need to work.
 
 ---
 

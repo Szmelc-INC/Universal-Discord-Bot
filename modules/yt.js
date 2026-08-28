@@ -11,6 +11,89 @@ const MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024; // 2GB safety cap (Discord pr
 const DISCORD_UPLOAD_LIMIT = 25 * 1024 * 1024; // conservative 25MB
 const SEARCH_CACHE_TTL = 10 * 60_000; // 10 min
 
+// Cookie source, in priority order: yt-dlp's --cookies-from-browser reads a
+// browser's live cookie store directly (no manual export needed), which is
+// far less likely to go stale than a hand-exported cookies.txt. Firefox
+// first since its cookie DB isn't locked by a running browser process the
+// way Chromium-based ones are — https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp
+const BROWSER_PRIORITY = ['firefox', 'chrome', 'chromium', 'brave', 'edge', 'vivaldi', 'opera'];
+
+// Best-effort "is this browser installed on this host" check via its known
+// profile/config directory — cheap (no process spawn) and good enough to
+// pick a sane default. yt-dlp itself still does the real cookie extraction
+// and reports its own error if the directory turns out to be empty/unusable.
+function browserProfileDirs(browser) {
+  const home = os.homedir();
+  const plat = process.platform;
+  const byPlatform = {
+    firefox: {
+      linux: [path.join(home, '.mozilla', 'firefox')],
+      darwin: [path.join(home, 'Library', 'Application Support', 'Firefox')],
+      win32: [path.join(process.env.APPDATA || '', 'Mozilla', 'Firefox')]
+    },
+    chrome: {
+      linux: [path.join(home, '.config', 'google-chrome')],
+      darwin: [path.join(home, 'Library', 'Application Support', 'Google', 'Chrome')],
+      win32: [path.join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'User Data')]
+    },
+    chromium: {
+      linux: [path.join(home, '.config', 'chromium')],
+      darwin: [path.join(home, 'Library', 'Application Support', 'Chromium')],
+      win32: [path.join(process.env.LOCALAPPDATA || '', 'Chromium', 'User Data')]
+    },
+    brave: {
+      linux: [path.join(home, '.config', 'BraveSoftware', 'Brave-Browser')],
+      darwin: [path.join(home, 'Library', 'Application Support', 'BraveSoftware', 'Brave-Browser')],
+      win32: [path.join(process.env.LOCALAPPDATA || '', 'BraveSoftware', 'Brave-Browser', 'User Data')]
+    },
+    edge: {
+      linux: [path.join(home, '.config', 'microsoft-edge')],
+      darwin: [path.join(home, 'Library', 'Application Support', 'Microsoft Edge')],
+      win32: [path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'Edge', 'User Data')]
+    },
+    vivaldi: {
+      linux: [path.join(home, '.config', 'vivaldi')],
+      darwin: [path.join(home, 'Library', 'Application Support', 'Vivaldi')],
+      win32: [path.join(process.env.LOCALAPPDATA || '', 'Vivaldi', 'User Data')]
+    },
+    opera: {
+      linux: [path.join(home, '.config', 'opera')],
+      darwin: [path.join(home, 'Library', 'Application Support', 'com.operasoftware.Opera')],
+      win32: [path.join(process.env.APPDATA || '', 'Opera Software', 'Opera Stable')]
+    }
+  };
+  return byPlatform[browser]?.[plat] || [];
+}
+
+function isBrowserAvailable(browser) {
+  return browserProfileDirs(browser).some(dir => {
+    try { return fs.statSync(dir).isDirectory(); } catch { return false; }
+  });
+}
+
+let cookieArgsCache = null;
+// --cookies-from-browser <firefox, then any other detected browser> as the
+// default, falling back to cookies.txt if present, else no cookie source at
+// all. Cached after the first call — the host's installed-browser set
+// doesn't change mid-process, and this only costs a handful of fs.stat calls
+// either way.
+function cookieArgs() {
+  if (cookieArgsCache) return cookieArgsCache;
+
+  for (const browser of BROWSER_PRIORITY) {
+    if (isBrowserAvailable(browser)) {
+      console.log(`[yt] Using cookies from browser: ${browser}`);
+      return (cookieArgsCache = ['--cookies-from-browser', browser]);
+    }
+  }
+  if (fs.existsSync(COOKIES_FILE)) {
+    console.log('[yt] No browser cookie store found; using cookies.txt');
+    return (cookieArgsCache = ['--cookies', COOKIES_FILE]);
+  }
+  console.log('[yt] No cookie source available (no supported browser profile, no cookies.txt) — some videos may fail to fetch');
+  return (cookieArgsCache = []);
+}
+
 // messageId -> { userId, results: [{title,url}], chosen: number|null, expiresAt }
 const searchCache = new Map();
 setInterval(() => {
@@ -41,7 +124,7 @@ async function ytSearch(query, max = 5) {
       '--no-warnings',
       '--skip-download'
     ];
-    if (fs.existsSync(COOKIES_FILE)) args.push('--cookies', COOKIES_FILE);
+    args.push(...cookieArgs());
 
     const child = spawn('yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
@@ -70,7 +153,7 @@ async function downloadMedia(url, format /* 'mp3' | 'mp4' */) {
   const outTemplate = path.join(DOWNLOAD_DIR, `${id}.%(ext)s`);
 
   const args = ['--no-warnings', '--rm-cache-dir', '-o', outTemplate];
-  if (fs.existsSync(COOKIES_FILE)) args.push('--cookies', COOKIES_FILE);
+  args.push(...cookieArgs());
 
   if (format === 'mp3') {
     args.push('--extract-audio', '--audio-format', 'mp3', '--audio-quality', '0');

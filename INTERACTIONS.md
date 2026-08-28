@@ -328,7 +328,7 @@ For orientation when reading the diff this document shipped with:
 |---|---|
 | `lib/interactions.js` | New — the shared helpers described above |
 | `main.js` | `sendWithLimits` made defer-aware (was throwing on `/yt search`); central component/modal routing added to `interactionCreate`; `lib/` cache busted on module reload |
-| `yt.js` | `/yt search` now shows a select menu of results + MP3/MP4 buttons; downloaded files land in the same edited message (was `followUp`, a second message) |
+| `yt.js` | `/yt search` now shows a select menu of results + MP3/MP4 buttons; downloaded files land in the same edited message (was `followUp`, a second message); cookie source defaults to `--cookies-from-browser firefox`, falling through the browser priority list, then `cookies.txt`, then none — see §9 |
 | `music.js` | One persistent "now playing" control panel per guild (pause/resume/skip/stop/queue buttons), edited via `Message#edit` — replaces a `followUp` per track/event |
 | `help.js` | Command list is now a select menu that shows details in place, with a back button |
 | `module-manager.js` | `/modules list` gets a select menu to toggle a module directly (also fixed a pre-existing bug where the "critical module" protection checked the command name `"modules"` instead of the file name `"module-manager"`, leaving it toggleable) |
@@ -339,13 +339,47 @@ For orientation when reading the diff this document shipped with:
 | `dm.js`, `anon.js` | Message text can be composed in a modal when the slash option is left empty |
 | `ollama.js` | `/ollama ask`'s `prompt` option is now optional — leave it empty to compose in a modal; every answer gets 🔄 Regeneruj (re-ask the same prompt, edits the same message) and 🗑️ Wyczyść historię buttons |
 | `tictactoe.js` | Idle timeout added (collector ran forever otherwise); end-of-game now edits the `Message` directly instead of `interaction.followUp` (which would throw once the 15-minute interaction token expired on a long game); rematch button added |
+| `shell.js` | `command` is now optional: admins get a modal for the full free-form command, non-admins get a select menu scoped to the whitelist — commands that take text (`figlet`/`toilet`/`cowsay`) then prompt for it via a second modal. See §9 for why this doesn't weaken the non-admin sandbox. |
 
 **Verified but left as-is (reply-standard already correct, no components added):**
 `info.js`, `ping.js`, `file_upload.js`, `dms.js`, `reaction.js`, `responses.js`,
-`reload.js`, `audio.js`, `incwel-69.js`, `role_manager.js`, `rich_presence.js`,
-`shell.js`. None of these had a defer/reply/followUp bug to fix. `shell.js`
-deliberately has no modal — a slash option keeps the command whitelist-
-enforceable for non-admins in a way a free-text modal would blur.
-`rich_presence.js` and `info.js` are reasonable next candidates for a select
-menu / refresh button if a future pass wants to extend coverage further —
-not done here for scope reasons, not because they don't fit.
+`reload.js`, `audio.js`, `incwel-69.js`, `role_manager.js`, `rich_presence.js`.
+None of these had a defer/reply/followUp bug to fix. `rich_presence.js` and
+`info.js` are reasonable next candidates for a select menu / refresh button
+if a future pass wants to extend coverage further — not done here for scope
+reasons, not because they don't fit.
+
+---
+
+## 9. Two worked examples from the sweep above
+
+**Cookie source fallback (`yt.js`).** `yt-dlp` needs cookies for
+age-restricted/region-locked content. The default is
+`--cookies-from-browser firefox`, falling through a priority list
+(`firefox → chrome → chromium → brave → edge → vivaldi → opera`) by checking
+each browser's known profile/config directory on disk — a cheap, no-network
+heuristic, not a guarantee (yt-dlp still does the real extraction and
+reports its own error if a directory turns out to be empty). If no browser
+profile is found at all, it falls back to a hand-exported `cookies.txt` at
+the repo root, then to no cookie source. This is *not* an interaction
+pattern — it's here because it's a related "pick the best available option,
+degrade gracefully" shape worth knowing about when touching `yt.js` or
+`music.js` (which still only supports `cookies.txt`; not migrated in this
+pass since only `yt.js` was asked for).
+
+**Preserving a security boundary while adding a modal (`shell.js`).** Before
+modals, `command` was a required slash option and non-admins were checked
+against a whitelist by parsing that string. Making `command` optional to
+offer a modal could *not* just mean "show non-admins the same free-text
+modal admins get" — that would let them type arbitrary shell syntax the
+whitelist was specifically there to block. The fix: non-admins who omit
+`command` get a **select menu** constrained to the whitelist keys, not a
+modal. For whitelisted commands that take an argument (`figlet "text"`), a
+modal collects *only the argument*, opened after the base command is
+already fixed by the select-menu choice — and it's still delivered through
+`execFile(binary, [arg])`, never a shell, so the modal's text can only ever
+become one argument to a fixed binary, not injected shell syntax. The
+lesson for future modules: a modal is a text-input box, nothing more — if a
+command's safety currently comes from constraining *which binary runs*, a
+modal must sit downstream of that constraint (after a select/button fixes
+the binary), never upstream of it (replacing the whitelist check itself).
