@@ -11,6 +11,14 @@ Modules can be:
 - Reloaded without restarting the bot
 - Protected behind admin checks
 
+**Before writing or editing a module's reply/button/select-menu/modal logic,
+read [`INTERACTIONS.md`](INTERACTIONS.md).** It defines the standard every
+module follows: one edited message per result (never a stream of new
+messages for one action), the shared `lib/interactions.js` helpers, the
+`modname:action:payload` customId convention, and when to reach for buttons,
+select menus, or modals. New modules and edits to existing ones should
+conform to it.
+
 ---
 
 ## Module Categories
@@ -66,7 +74,7 @@ Modules can be:
 Dynamic help command that reads live from registered slash commands.
 
 **Usage:**
-- `/help` — Shows all available commands grouped by category
+- `/help` — Shows all available commands grouped by category, with a select menu to jump to any command's details in the same message (⬅ button to go back)
 - `/help <command>` — Shows detailed information about a specific command (including subcommands and options)
 
 Automatically stays up to date when modules are enabled/disabled.
@@ -92,12 +100,12 @@ Both commands are sent ephemerally by default.
 Runtime management of bot modules.
 
 **Subcommands:**
-- `/modules list` — Show all modules and their current status (enabled/disabled)
+- `/modules list` — Show all modules and their current status (enabled/disabled), with a select menu to toggle a module directly in the same message
 - `/modules enable <name>`
 - `/modules disable <name>`
 - `/modules reload` — Fully reload all modules and slash commands
 
-Critical admin modules (like `modules`, `settings`, `reload`) cannot be disabled for safety.
+Critical admin modules (`module-manager`, `settings`, `reload` — by file name) cannot be disabled for safety.
 
 ---
 
@@ -123,7 +131,7 @@ The last set presence is saved and restored automatically on bot restart.
 Live configuration management.
 
 **Subcommands:**
-- `/settings list` — Show current configuration
+- `/settings list` — Show current configuration, with an "Edytuj (modal)" button for a quick key/value edit without re-running the command
 - `/settings get <key>` — Get a specific value (supports dot notation)
 - `/settings set <key> <value>` — Change a value (supports JSON for complex objects)
 - `/settings reload` — Reload `config.json` from disk
@@ -154,7 +162,7 @@ Includes execution timeouts and output length protection.
 Full webhook management system.
 
 **Subcommands:**
-- `/webhooks list`
+- `/webhooks list` — select menu → detail view (edit via modal / delete with confirm / back), all in the same message
 - `/webhooks create <name> <channel> [avatar]`
 - `/webhooks edit <webhook> [name] [avatar] [channel]`
 - `/webhooks delete <webhook>`
@@ -176,7 +184,7 @@ Advanced message cleanup tool.
 
 Supports time formats like `30s`, `15m`, `2h`, `1d`. Optional backup creates text logs + downloads attachments before deletion.
 
-Requires `ManageMessages` permission (and bot admin).
+Requires `ManageMessages` permission (and bot admin). Destructive and irreversible, so the command always shows a confirm/cancel button pair first — nothing is deleted until you click **Usuń**; progress and the final summary reuse that same message.
 
 ---
 
@@ -284,6 +292,8 @@ Full-featured voice music player.
 
 Supports YouTube search and direct URLs. Uses yt-dlp for audio extraction. Per-guild queues.
 
+Playback shows one persistent "now playing" control panel per guild (⏸️ Pauza / ▶️ Wznów / ⏭️ Pomiń / ⏹️ Stop / 📜 Kolejka buttons) that gets edited in place for every track change — the panel outlives the slash command's 15-minute interaction window since a queue can run for hours.
+
 ---
 
 ### `/yt`
@@ -292,11 +302,11 @@ Supports YouTube search and direct URLs. Uses yt-dlp for audio extraction. Per-g
 YouTube tools.
 
 **Subcommands:**
-- `/yt search <query> [max]`
+- `/yt search <query> [max]` — results come with a select menu; picking one reveals MP3/MP4 buttons that download directly from the search, no need to copy/paste a URL into `/yt mp3`
 - `/yt mp3 <url>` (Admin)
 - `/yt mp4 <url>` (Admin)
 
-Uses yt-dlp under the hood. Downloads are restricted to admins.
+Uses yt-dlp under the hood. Downloads are restricted to admins. The downloaded file is attached to the same message the command replied with (progress → file), never a separate upload message.
 
 ---
 
@@ -365,15 +375,15 @@ After editing the JSON file, run `/ollama reload` (or restart the bot). Toggle t
 
 ### Other Notable Modules
 
-- **`/image`** — `/image losowe` (memes with multiple fallbacks) and `/image cycki` (NSFW)
-- **`/quote`** — Random Boner, Bomba, jokes, and text emojis
-- **`/joke`** — Clean public joke APIs
-- **`/rng`** — Coin, dice, random numbers/strings
+- **`/image`** — `/image losowe` (memes with multiple fallbacks) and `/image cycki` (NSFW) — both have a 🔄 "Losuj ponownie" button
+- **`/quote`** — Random Boner, Bomba, jokes, and text emojis — 🔄 reroll button
+- **`/joke`** — Clean public joke APIs — 🔄 reroll button
+- **`/rng`** — Coin, dice, random numbers/strings — 🔄 reroll button (keeps the same max/sides)
 - **`/role`** — Role management (add/remove/list)
-- **`/dm`** — Send DMs as the bot (admin)
-- **`/crypto`** — Live cryptocurrency prices
-- **`/tictactoe`** — Button-based multiplayer game
-- **`/anon`** — Anonymous messaging to pre-configured channels
+- **`/dm`** — Send DMs as the bot (admin) — leave `message` empty to compose it in a modal instead
+- **`/crypto`** — Live cryptocurrency prices — 🔄 refresh button
+- **`/tictactoe`** — Button-based multiplayer game, 10-minute idle timeout, 🔁 rematch button on game end
+- **`/anon`** — Anonymous messaging to pre-configured channels — leave `message` empty (and no file) to compose it in a modal instead
 - **`/reaction`** — Reaction roles (configured via `config/reaction-roles.json`)
 - **`/dms`** — Passive DM logging to `dm-logs/`
 

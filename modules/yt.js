@@ -3,11 +3,20 @@ const { execFile, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { customId, parseCustomId, reply, updatePanel, notice, buttons, selectMenu } = require('../lib/interactions');
 
 const DOWNLOAD_DIR = path.join(__dirname, '..', '.downloads');
 const COOKIES_FILE = path.join(__dirname, '..', 'cookies.txt');
 const MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024; // 2GB safety cap (Discord practical limit is much lower)
 const DISCORD_UPLOAD_LIMIT = 25 * 1024 * 1024; // conservative 25MB
+const SEARCH_CACHE_TTL = 10 * 60_000; // 10 min
+
+// messageId -> { userId, results: [{title,url}], chosen: number|null, expiresAt }
+const searchCache = new Map();
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, entry] of searchCache) if (entry.expiresAt < now) searchCache.delete(id);
+}, 60_000).unref();
 
 function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -45,7 +54,11 @@ async function ytSearch(query, max = 5) {
         return;
       }
       const lines = out.trim().split('\n').filter(Boolean).slice(0, max);
-      resolve({ results: lines });
+      const results = lines.map(line => {
+        const m = line.match(/^(.*):\s*(https?:\/\/\S+)$/);
+        return m ? { title: m[1].trim(), url: m[2].trim() } : { title: line, url: null };
+      }).filter(r => r.url);
+      resolve({ results });
     });
     setTimeout(() => { try { child.kill(); } catch {} }, 25000);
   });
@@ -96,6 +109,55 @@ async function downloadMedia(url, format /* 'mp3' | 'mp4' */) {
   });
 }
 
+const MODULE = 'yt';
+
+function resultsPayload(entry) {
+  const { results, chosen } = entry;
+  const lines = results.map((r, i) => `${i === chosen ? '**→**' : `${i + 1}.`} [${r.title}](${r.url})`);
+  const rows = [selectMenu({
+    id: customId(MODULE, 'pick'),
+    placeholder: 'Wybierz film do pobrania…',
+    options: results.map((r, i) => ({ label: r.title.slice(0, 100), value: String(i) }))
+  })];
+  if (chosen != null) {
+    rows.push(...buttons([
+      { id: customId(MODULE, 'dl', `mp3:${chosen}`), label: 'Pobierz MP3', style: 'success', emoji: '🎵' },
+      { id: customId(MODULE, 'dl', `mp4:${chosen}`), label: 'Pobierz MP4', style: 'primary', emoji: '🎬' }
+    ]));
+  }
+  return { content: lines.join('\n'), components: rows };
+}
+
+// Downloads `url` as `format` and edits `interaction` (already deferred/updated)
+// in place: progress message first, then the finished file in the SAME message.
+async function runDownload(interaction, url, format) {
+  if (!await hasYtDlp()) {
+    await reply(interaction, 'yt-dlp binary not found on host. Install it first.');
+    return;
+  }
+  await reply(interaction, { content: `⏳ Pobieranie jako ${format.toUpperCase()}…`, components: [] });
+  const dl = await downloadMedia(url, format);
+
+  if (dl.error || !dl.filePath) {
+    await reply(interaction, `❌ Pobieranie nieudane: ${dl.error || 'unknown'}`);
+    return;
+  }
+  if (dl.size > DISCORD_UPLOAD_LIMIT) {
+    await reply(interaction, `Pobrano (${(dl.size / 1024 / 1024).toFixed(1)} MB), ale plik przekracza limit uploadu Discorda. Zostawiony na hoście: ${dl.filePath}`);
+    return;
+  }
+  try {
+    await reply(interaction, {
+      content: `✅ Gotowe — ${format.toUpperCase()}:`,
+      files: [{ attachment: dl.filePath, name: path.basename(dl.filePath) }]
+    });
+  } catch (e) {
+    await reply(interaction, `Błąd uploadu: ${e.message}. Plik pozostał na hoście: ${dl.filePath}`);
+  } finally {
+    setTimeout(() => cleanup(dl.filePath), 5 * 60 * 1000);
+  }
+}
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('yt')
@@ -122,55 +184,65 @@ module.exports = {
       await interaction.deferReply();
       const result = await ytSearch(query, max);
       if (result.error) {
-        await interaction.editReply(`Search error: ${result.error}`);
+        await reply(interaction, `Search error: ${result.error}`);
         return;
       }
-      if (!result.results || !result.results.length) {
-        await interaction.editReply('No results.');
+      if (!result.results.length) {
+        await reply(interaction, 'No results.');
         return;
       }
-      await interaction.client.sendWithLimits(interaction, result.results.join('\n'));
+
+      const entry = { userId: interaction.user.id, results: result.results, chosen: null, expiresAt: Date.now() + SEARCH_CACHE_TTL };
+      const msg = await interaction.editReply(resultsPayload(entry));
+      searchCache.set(msg.id, entry);
       return;
     }
 
-    // mp3 / mp4 are privileged
+    // mp3 / mp4 direct-URL subcommands are privileged
     if (!interaction.client.isAdmin(interaction.member || interaction.user)) {
       await interaction.reply({ content: 'Download commands are admin-only.', flags: MessageFlags.Ephemeral });
       return;
     }
 
-    const url = interaction.options.getString('url');
-    const format = sub;
-
-    if (!await hasYtDlp()) {
-      await interaction.reply({ content: 'yt-dlp binary not found on host. Install it first (same as Python version).', flags: MessageFlags.Ephemeral });
-      return;
-    }
-
     await interaction.deferReply();
-    const dl = await downloadMedia(url, format);
+    await runDownload(interaction, interaction.options.getString('url'), sub);
+  },
 
-    if (dl.error || !dl.filePath) {
-      await interaction.editReply(`Download failed: ${dl.error || 'unknown'}`);
+  // Central component router (main.js) dispatches here for any customId
+  // prefixed "yt:" — see lib/interactions.js and INTERACTIONS.md.
+  async handleComponent(interaction) {
+    const { action, payload } = parseCustomId(interaction.customId);
+    const entry = searchCache.get(interaction.message.id);
+
+    if (!entry) {
+      await updatePanel(interaction, { content: '⌛ Te wyniki wygasły — użyj `/yt search` ponownie.', components: [] });
+      return;
+    }
+    if (interaction.user.id !== entry.userId) {
+      await notice(interaction, 'Tylko autor wyszukiwania może tego użyć.');
       return;
     }
 
-    if (dl.size > DISCORD_UPLOAD_LIMIT) {
-      await interaction.editReply(`Downloaded (${(dl.size / 1024 / 1024).toFixed(1)} MB) but exceeds typical Discord upload limit. File left on host at: ${dl.filePath}`);
+    if (action === 'pick') {
+      entry.chosen = Number(interaction.values[0]);
+      await updatePanel(interaction, resultsPayload(entry));
       return;
     }
 
-    try {
-      await interaction.editReply({ content: `Downloaded as ${format.toUpperCase()} — uploading...` });
-      await interaction.followUp({
-        content: `${format.toUpperCase()} ready:`,
-        files: [{ attachment: dl.filePath, name: path.basename(dl.filePath) }]
-      });
-    } catch (e) {
-      await interaction.followUp(`Upload error: ${e.message}. File remains on disk: ${dl.filePath}`);
-    } finally {
-      // We intentionally leave the file for a bit in case followUp fails; a real impl would use a cleanup job
-      setTimeout(() => cleanup(dl.filePath), 5 * 60 * 1000);
+    if (action === 'dl') {
+      const [format, idxStr] = payload.split(':');
+      const chosen = entry.results[Number(idxStr)];
+      if (!chosen) {
+        await notice(interaction, 'Nieprawidłowy wybór — wyszukaj ponownie.');
+        return;
+      }
+      if (!interaction.client.isAdmin(interaction.member || interaction.user)) {
+        await notice(interaction, 'Pobieranie jest tylko dla adminów.');
+        return;
+      }
+      await interaction.deferUpdate();
+      searchCache.delete(interaction.message.id);
+      await runDownload(interaction, chosen.url, format);
     }
   }
 };

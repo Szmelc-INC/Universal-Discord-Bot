@@ -2,8 +2,32 @@ const { SlashCommandBuilder, ChannelType, PermissionFlagsBits, MessageFlags } = 
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
+const { customId, parseCustomId, reply, panel, updatePanel, notice, buttons } = require('../lib/interactions');
 
 const BACKUP_DIR = path.join(__dirname, '..', 'backups');
+const MODULE = 'rm';
+const CONFIRM_TTL = 5 * 60_000;
+
+// messageId -> pending destructive job, awaiting a confirm/cancel button click
+const pending = new Map();
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, job] of pending) if (job.expiresAt < now) pending.delete(id);
+}, 60_000).unref();
+
+function confirmPayload(job) {
+  const targetLine = job.targetUser ? `\nUżytkownik: **${job.targetUser.tag}**` : '';
+  const content = `⚠️ **Potwierdź czyszczenie wiadomości**\n`
+    + `Zakres: **${job.scope}**${targetLine}\n`
+    + `Okno czasowe: **${job.timeStr}** (od ${job.cutoff.toISOString()})\n`
+    + `Backup przed usunięciem: **${job.doBackup ? 'tak' : 'nie'}**\n\n`
+    + `Tej operacji nie da się cofnąć.`;
+  const rows = buttons([
+    { id: customId(MODULE, 'confirm'), label: 'Usuń', style: 'danger', emoji: '🗑️' },
+    { id: customId(MODULE, 'cancel'), label: 'Anuluj', style: 'secondary' }
+  ]);
+  return { content, components: rows };
+}
 
 function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -165,95 +189,128 @@ module.exports = {
       await interaction.reply({ content: 'User is required for user scope.', flags: MessageFlags.Ephemeral });
       return;
     }
-    await interaction.deferReply();
-    const guild = interaction.guild;
-    if (!guild) {
-      await interaction.editReply('This command can only be used in a server.');
+    if (!interaction.guild) {
+      await interaction.reply({ content: 'This command can only be used in a server.', flags: MessageFlags.Ephemeral });
       return;
     }
-    const userIdFilter = targetUser ? targetUser.id : null;
-    const filterFn = (m) => m.createdTimestamp >= cutoff.getTime() && (!userIdFilter || m.author.id === userIdFilter);
-    let totalDeleted = 0;
-    let channelsTouched = 0;
-    let errorCount = 0;
-    const backupResults = [];
-    try {
-      const chans = scope === 'global'
-        ? [...guild.channels.cache.filter(c => c.type === ChannelType.GuildText || c.type === ChannelType.GuildAnnouncement).values()]
-        : [interaction.channel].filter(Boolean);
-      const me = guild.members.me;
-      for (const ch of chans) {
-        if (!ch || ch.type !== ChannelType.GuildText && ch.type !== ChannelType.GuildAnnouncement) continue;
-        const perms = ch.permissionsFor(me);
-        if (!perms || !perms.has(PermissionFlagsBits.ReadMessageHistory) || !perms.has(PermissionFlagsBits.ManageMessages)) {
-          continue;
-        }
-        let matches = [];
-        if (doBackup) {
-          try {
-            matches = await collectMatching(ch, cutoff, userIdFilter);
-            if (matches.length) {
-              const b = await backupMessages(ch, matches, guild.id);
-              backupResults.push(b);
-            }
-          } catch (e) {
-            errorCount++;
-          }
-        }
-        // delete pass
+
+    // Destructive + irreversible: require an explicit confirm click before
+    // touching anything. The confirmation message becomes the progress
+    // display too — same message throughout, never a second one.
+    const job = { userId: interaction.user.id, scope, timeStr, doBackup, targetUser, cutoff, expiresAt: Date.now() + CONFIRM_TTL };
+    const msg = await panel(interaction, confirmPayload(job));
+    pending.set(msg.id, job);
+  },
+
+  // Central component router (main.js) dispatches here for any customId
+  // prefixed "rm:" — see lib/interactions.js and INTERACTIONS.md.
+  async handleComponent(interaction) {
+    const { action } = parseCustomId(interaction.customId);
+    const job = pending.get(interaction.message.id);
+
+    if (!job) {
+      await updatePanel(interaction, { content: '⌛ To potwierdzenie wygasło. Uruchom `/rm` ponownie.', components: [] });
+      return;
+    }
+    if (interaction.user.id !== job.userId) {
+      await notice(interaction, 'Tylko autor komendy może to potwierdzić.');
+      return;
+    }
+    pending.delete(interaction.message.id);
+
+    if (action === 'cancel') {
+      await updatePanel(interaction, { content: 'Anulowano — nic nie zostało usunięte.', components: [] });
+      return;
+    }
+    if (action === 'confirm') {
+      await interaction.deferUpdate();
+      await runCleanup(interaction, job);
+    }
+  }
+};
+
+async function runCleanup(interaction, job) {
+  const { scope, doBackup, targetUser, cutoff } = job;
+  const guild = interaction.guild;
+  const userIdFilter = targetUser ? targetUser.id : null;
+  const filterFn = (m) => m.createdTimestamp >= cutoff.getTime() && (!userIdFilter || m.author.id === userIdFilter);
+  let totalDeleted = 0;
+  let channelsTouched = 0;
+  let errorCount = 0;
+  const backupResults = [];
+  try {
+    const chans = scope === 'global'
+      ? [...guild.channels.cache.filter(c => c.type === ChannelType.GuildText || c.type === ChannelType.GuildAnnouncement).values()]
+      : [interaction.channel].filter(Boolean);
+    const me = guild.members.me;
+    for (const ch of chans) {
+      if (!ch || ch.type !== ChannelType.GuildText && ch.type !== ChannelType.GuildAnnouncement) continue;
+      const perms = ch.permissionsFor(me);
+      if (!perms || !perms.has(PermissionFlagsBits.ReadMessageHistory) || !perms.has(PermissionFlagsBits.ManageMessages)) {
+        continue;
+      }
+      let matches = [];
+      if (doBackup) {
         try {
-          let before = null;
-          while (true) {
-            const opts = { limit: 100 };
-            if (before) opts.before = before;
-            let fetched;
-            try {
-              fetched = await ch.messages.fetch(opts);
-            } catch {
-              errorCount++;
-              break;
-            }
-            if (!fetched.size) break;
-            const batch = [];
-            for (const m of fetched.values()) {
-              if (filterFn(m)) batch.push(m);
-            }
-            before = fetched.lastKey();
-            if (batch.length) {
-              const del = await deleteBatch(ch, batch);
-              totalDeleted += del;
-            }
-            if (fetched.size < 100) break;
+          matches = await collectMatching(ch, cutoff, userIdFilter);
+          if (matches.length) {
+            const b = await backupMessages(ch, matches, guild.id);
+            backupResults.push(b);
           }
         } catch (e) {
           errorCount++;
         }
-        channelsTouched++;
-        if (doBackup) {
-          await interaction.editReply(`Backed up + cleaned #${ch.name} (total deleted: ${totalDeleted})`).catch(() => {});
-        } else {
-          await interaction.editReply(`Cleaned #${ch.name} (total deleted: ${totalDeleted})`).catch(() => {});
-        }
       }
-      let summary = `Done. Deleted ${totalDeleted} message(s) across ${channelsTouched} channel(s).`;
-      if (errorCount) summary += ` Errors: ${errorCount}.`;
-      if (backupResults.length) {
-        summary += ` Backed up ${backupResults.length} log(s).`;
-        try {
-          const u = interaction.user;
-          for (const br of backupResults) {
-            const files = [br.txtPath];
-            await u.send({ content: `rm backup: ${path.basename(br.txtPath)}`, files }).catch(() => {});
-            if (br.filesDir) {
-              await u.send(`Attachments saved on host: ${br.filesDir}`).catch(() => {});
-            }
+      // delete pass
+      try {
+        let before = null;
+        while (true) {
+          const opts = { limit: 100 };
+          if (before) opts.before = before;
+          let fetched;
+          try {
+            fetched = await ch.messages.fetch(opts);
+          } catch {
+            errorCount++;
+            break;
           }
-        } catch {}
+          if (!fetched.size) break;
+          const batch = [];
+          for (const m of fetched.values()) {
+            if (filterFn(m)) batch.push(m);
+          }
+          before = fetched.lastKey();
+          if (batch.length) {
+            const del = await deleteBatch(ch, batch);
+            totalDeleted += del;
+          }
+          if (fetched.size < 100) break;
+        }
+      } catch (e) {
+        errorCount++;
       }
-      await interaction.editReply(summary);
-    } catch (e) {
-      await interaction.editReply(`Cleanup failed: ${e.message || e}`).catch(() => {});
-      console.error(e);
+      channelsTouched++;
+      const progress = doBackup ? `Backed up + cleaned #${ch.name}` : `Cleaned #${ch.name}`;
+      await reply(interaction, `⏳ ${progress} (total deleted: ${totalDeleted})`).catch(() => {});
     }
+    let summary = `✅ Done. Deleted ${totalDeleted} message(s) across ${channelsTouched} channel(s).`;
+    if (errorCount) summary += ` Errors: ${errorCount}.`;
+    if (backupResults.length) {
+      summary += ` Backed up ${backupResults.length} log(s).`;
+      try {
+        const u = interaction.user;
+        for (const br of backupResults) {
+          const files = [br.txtPath];
+          await u.send({ content: `rm backup: ${path.basename(br.txtPath)}`, files }).catch(() => {});
+          if (br.filesDir) {
+            await u.send(`Attachments saved on host: ${br.filesDir}`).catch(() => {});
+          }
+        }
+      } catch {}
+    }
+    await reply(interaction, summary);
+  } catch (e) {
+    await reply(interaction, `Cleanup failed: ${e.message || e}`).catch(() => {});
+    console.error(e);
   }
-};
+}

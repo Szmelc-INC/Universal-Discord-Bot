@@ -43,6 +43,80 @@ class TicTacToeGame {
     ];
     return wins.some(line => line.every(i => b[i] === symbol));
   }
+
+  isFull() {
+    return this.board.every(c => c !== null);
+  }
+}
+
+const IDLE_TIMEOUT = 10 * 60_000; // abandon the game if nobody moves for 10 min
+
+function rematchRow() {
+  return [new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('ttt_rematch').setLabel('🔁 Rewanż').setStyle(ButtonStyle.Primary)
+  )];
+}
+
+// Runs one game to completion on `message` (created by /game, or by a previous
+// rematch), then offers a rematch button on the SAME message rather than
+// spawning a new one. Recurses on rematch instead of starting a fresh message.
+function startGame(message, p1, p2) {
+  const game = new TicTacToeGame(p1, p2);
+  const collector = message.createMessageComponentCollector({ componentType: ComponentType.Button, idle: IDLE_TIMEOUT });
+
+  collector.on('collect', async i => {
+    if (i.customId === 'ttt_rematch') return; // handled by the separate rematch collector below
+    const idx = parseInt(i.customId.split('_')[1], 10);
+    if (game.board[idx] || (i.user.id !== game.current.id)) {
+      return i.reply({ content: "Not your turn!", flags: MessageFlags.Ephemeral });
+    }
+    const symbol = game.current.id === p1.id ? '❌' : '🔵';
+    game.mark(idx, symbol);
+    const won = game.check(symbol);
+    const full = !won && game.isFull();
+    game.current = game.current.id === p1.id ? p2 : p1;
+
+    if (won) {
+      collector.stop('win');
+      return i.update({ content: `${i.user} wins!`, components: game.buttons });
+    }
+    if (full) {
+      collector.stop('draw');
+      return i.update({ content: "It's a draw!", components: game.buttons });
+    }
+    await i.update({ components: game.buttons });
+  });
+
+  collector.on('end', async (_collected, reason) => {
+    // Interaction tokens (and therefore followUp/editReply) expire after 15
+    // minutes — this game can run far longer than that, so the end-of-game
+    // update goes through Message#edit, not the original interaction.
+    const suffix = reason === 'idle' ? '\n⌛ Game abandoned (no moves for 10 min).' : '';
+    try {
+      await message.edit({
+        content: (message.content || 'Tic Tac Toe') + suffix,
+        components: [...game.buttons, ...rematchRow()]
+      });
+    } catch { /* message may have been deleted */ }
+
+    const rematchCollector = message.createMessageComponentCollector({
+      componentType: ComponentType.Button,
+      filter: i => i.customId === 'ttt_rematch',
+      time: 5 * 60_000,
+      max: 1
+    });
+    rematchCollector.on('collect', async i => {
+      if (i.user.id !== p1.id && i.user.id !== p2.id) {
+        return i.reply({ content: 'Only the two players can start a rematch.', flags: MessageFlags.Ephemeral });
+      }
+      const fresh = new TicTacToeGame(p1, p2);
+      await i.update({ content: `Tic Tac Toe: ${p1} (❌) vs ${p2} (🔵)`, components: fresh.buttons });
+      startGame(message, p1, p2);
+    });
+    rematchCollector.on('end', collected => {
+      if (!collected.size) message.edit({ components: [...game.buttons] }).catch(() => {});
+    });
+  });
 }
 
 module.exports = {
@@ -59,28 +133,6 @@ module.exports = {
     }
     const game = new TicTacToeGame(p1, p2);
     const message = await interaction.reply({ content: `Tic Tac Toe: ${p1} (❌) vs ${p2} (🔵)`, components: game.buttons, fetchReply: true });
-    const collector = message.createMessageComponentCollector({ componentType: ComponentType.Button });
-
-    collector.on('collect', async i => {
-      const idx = parseInt(i.customId.split('_')[1], 10);
-      if (game.board[idx] || (i.user.id !== game.current.id)) {
-        return i.reply({ content: "Not your turn!", flags: MessageFlags.Ephemeral });
-      }
-      const symbol = game.current.id === p1.id ? '❌' : '🔵';
-      game.mark(idx, symbol);
-      const won = game.check(symbol);
-      game.current = game.current.id === p1.id ? p2 : p1;
-      if (won) {
-        collector.stop('win');
-        return i.update({ content: `${i.user} wins!`, components: game.buttons });
-      }
-      await i.update({ components: game.buttons });
-    });
-
-    collector.on('end', (_collected, reason) => {
-      if (reason !== 'win') {
-        interaction.followUp('Game ended.');
-      }
-    });
+    startGame(message, p1, p2);
   }
 };
