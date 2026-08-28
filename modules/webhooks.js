@@ -1,4 +1,57 @@
 const { SlashCommandBuilder, EmbedBuilder, MessageFlags, PermissionFlagsBits } = require('discord.js');
+const { customId, parseCustomId, updatePanel, notice, buttons, selectMenu, showModal } = require('../lib/interactions');
+
+const MODULE = 'webhooks';
+
+function listEmbed(guild, webhooks) {
+  const embed = new EmbedBuilder()
+    .setTitle(`Webhooks in ${guild.name}`)
+    .setColor(0x5865F2)
+    .setFooter({ text: `${webhooks.size} total webhooks` });
+  const lines = [];
+  for (const [id, webhook] of webhooks) {
+    const channel = webhook.channel ? `<#${webhook.channel.id}>` : 'Unknown channel';
+    const creator = webhook.owner ? `${webhook.owner.tag}` : 'Unknown';
+    lines.push(`**${webhook.name}** — ${channel}\nCreator: ${creator} • ID: \`${id}\``);
+  }
+  embed.setDescription(lines.join('\n\n') || 'No webhooks found in this server.');
+  return embed;
+}
+
+function listRows(webhooks) {
+  if (!webhooks.size) return [];
+  return [selectMenu({
+    id: customId(MODULE, 'pick'),
+    placeholder: 'Wybierz webhook, by zobaczyć szczegóły / edytować / usunąć…',
+    options: [...webhooks.values()].slice(0, 25).map(w => ({
+      label: w.name.slice(0, 100),
+      value: w.id,
+      description: w.channel ? `#${w.channel.name}`.slice(0, 100) : undefined
+    }))
+  })];
+}
+
+function detailEmbed(webhook) {
+  const embed = new EmbedBuilder()
+    .setTitle(`Webhook: ${webhook.name}`)
+    .setColor(0x5865F2)
+    .addFields(
+      { name: 'ID', value: `\`${webhook.id}\``, inline: true },
+      { name: 'Channel', value: webhook.channel ? `<#${webhook.channel.id}>` : 'Unknown', inline: true },
+      { name: 'Created by', value: webhook.owner ? webhook.owner.tag : 'Unknown', inline: true },
+      { name: 'Webhook URL', value: '```\n' + webhook.url + '\n```' }
+    );
+  if (webhook.avatar) embed.setThumbnail(webhook.avatarURL());
+  return embed;
+}
+
+function detailButtons(webhook) {
+  return buttons([
+    { id: customId(MODULE, 'editm', webhook.id), label: 'Edytuj (modal)', style: 'primary', emoji: '✏️' },
+    { id: customId(MODULE, 'delask', webhook.id), label: 'Usuń', style: 'danger', emoji: '🗑️' },
+    { id: customId(MODULE, 'back'), label: '⬅ Lista', style: 'secondary' }
+  ]);
+}
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -143,28 +196,8 @@ module.exports = {
 
   async listWebhooks(interaction, guild) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
     const webhooks = await guild.fetchWebhooks();
-
-    if (webhooks.size === 0) {
-      return interaction.editReply('No webhooks found in this server.');
-    }
-
-    const embed = new EmbedBuilder()
-      .setTitle(`Webhooks in ${guild.name}`)
-      .setColor(0x5865F2)
-      .setFooter({ text: `${webhooks.size} total webhooks` });
-
-    const lines = [];
-    for (const [id, webhook] of webhooks) {
-      const channel = webhook.channel ? `<#${webhook.channel.id}>` : 'Unknown channel';
-      const creator = webhook.owner ? `${webhook.owner.tag}` : 'Unknown';
-      lines.push(`**${webhook.name}** — ${channel}\nCreator: ${creator} • ID: \`${id}\``);
-    }
-
-    embed.setDescription(lines.join('\n\n'));
-
-    await interaction.editReply({ embeds: [embed] });
+    await interaction.editReply({ embeds: [listEmbed(guild, webhooks)], components: listRows(webhooks) });
   },
 
   async createWebhook(interaction, guild) {
@@ -299,5 +332,99 @@ module.exports = {
     }
 
     await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+  },
+
+  // Central component router (main.js) dispatches here for any customId
+  // prefixed "webhooks:" — see lib/interactions.js and INTERACTIONS.md.
+  async handleComponent(interaction) {
+    if (!interaction.client.isAdmin(interaction.member || interaction.user)) {
+      await notice(interaction, 'Brak uprawnień.');
+      return;
+    }
+    const guild = interaction.guild;
+    if (!guild) return;
+    const { action, payload } = parseCustomId(interaction.customId);
+
+    if (action === 'pick' || action === 'delcancel') {
+      const id = action === 'pick' ? interaction.values[0] : payload;
+      const webhooks = await guild.fetchWebhooks();
+      const webhook = webhooks.get(id);
+      if (!webhook) {
+        await updatePanel(interaction, { content: 'Ten webhook już nie istnieje.', embeds: [], components: [] });
+        return;
+      }
+      await updatePanel(interaction, { content: '', embeds: [detailEmbed(webhook)], components: detailButtons(webhook) });
+      return;
+    }
+
+    if (action === 'back') {
+      await interaction.deferUpdate();
+      const webhooks = await guild.fetchWebhooks();
+      await interaction.editReply({ content: '', embeds: [listEmbed(guild, webhooks)], components: listRows(webhooks) });
+      return;
+    }
+
+    if (action === 'delask') {
+      await updatePanel(interaction, {
+        content: '⚠️ Na pewno usunąć ten webhook? Tej operacji nie da się cofnąć.',
+        embeds: [],
+        components: buttons([
+          { id: customId(MODULE, 'delconfirm', payload), label: 'Tak, usuń', style: 'danger' },
+          { id: customId(MODULE, 'delcancel', payload), label: 'Anuluj', style: 'secondary' }
+        ])
+      });
+      return;
+    }
+
+    if (action === 'delconfirm') {
+      await interaction.deferUpdate();
+      try {
+        const webhooks = await guild.fetchWebhooks();
+        const webhook = webhooks.get(payload);
+        if (webhook) await webhook.delete(`Deleted by ${interaction.user.tag}`);
+        await interaction.editReply({
+          content: webhook ? `✅ Webhook **${webhook.name}** usunięty.` : 'Webhook już nie istniał.',
+          embeds: [],
+          components: []
+        });
+      } catch (e) {
+        await interaction.editReply({ content: `Błąd usuwania: ${e.message}`, embeds: [], components: [] });
+      }
+      return;
+    }
+
+    if (action === 'editm') {
+      const webhooks = await guild.fetchWebhooks();
+      const webhook = webhooks.get(payload);
+      if (!webhook) {
+        await notice(interaction, 'Ten webhook już nie istnieje.');
+        return;
+      }
+      const modalSubmit = await showModal(interaction, {
+        id: customId(MODULE, 'editmodal', payload),
+        title: 'Edytuj webhook',
+        fields: [
+          { id: 'name', label: 'Nowa nazwa (puste = bez zmian)', style: 'short', required: false, value: webhook.name },
+          { id: 'avatar', label: 'Nowy URL avatara (puste = bez zmian)', style: 'short', required: false }
+        ]
+      });
+      if (!modalSubmit) return; // timed out
+
+      const newName = modalSubmit.fields.getTextInputValue('name');
+      const newAvatar = modalSubmit.fields.getTextInputValue('avatar');
+      const editOptions = {};
+      if (newName) editOptions.name = newName;
+      if (newAvatar) editOptions.avatar = newAvatar;
+      if (!Object.keys(editOptions).length) {
+        await modalSubmit.reply({ content: 'Nic do zmiany.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      try {
+        const updated = await webhook.edit(editOptions);
+        await modalSubmit.update({ content: '', embeds: [detailEmbed(updated)], components: detailButtons(updated) });
+      } catch (e) {
+        await modalSubmit.reply({ content: `Błąd edycji: ${e.message}`, flags: MessageFlags.Ephemeral });
+      }
+    }
   }
 };

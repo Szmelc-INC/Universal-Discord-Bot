@@ -1,4 +1,7 @@
 const { SlashCommandBuilder, EmbedBuilder, MessageFlags } = require('discord.js');
+const { customId, parseCustomId, reply, updatePanel, notice, buttons, selectMenu } = require('../lib/interactions');
+
+const MODULE = 'help';
 
 const CATEGORY_MAP = {
   rm: 'Admin',
@@ -36,6 +39,52 @@ function formatOption(opt) {
   return `${opt.name}${required}`;
 }
 
+function commandDetailEmbed(cmd) {
+  const embed = new EmbedBuilder()
+    .setTitle(`/${cmd.data.name}`)
+    .setDescription(cmd.data.description || 'No description')
+    .setColor(0x5865F2);
+  try {
+    const json = cmd.data.toJSON();
+    if (json.options && json.options.length) {
+      const opts = json.options.map(o => {
+        if (o.type === 1) return `• **${o.name}** — ${o.description}`;
+        return `• **${o.name}**${o.required ? '' : ' (optional)'} — ${o.description}`;
+      });
+      embed.addFields({ name: 'Options / Subcommands', value: opts.join('\n').slice(0, 1000) });
+    }
+  } catch {}
+  return embed;
+}
+
+function groupedPayload(client) {
+  const commands = [...client.commands.values()];
+  const grouped = {};
+  for (const cmd of commands) {
+    const cat = getCategory(cmd.data.name);
+    if (!grouped[cat]) grouped[cat] = [];
+    grouped[cat].push(`**/${cmd.data.name}** — ${cmd.data.description || ''}`);
+  }
+
+  const embed = new EmbedBuilder()
+    .setTitle('Universal Discord Bot — Help')
+    .setDescription('Wybierz komendę z listy poniżej, albo użyj `/help <command>`.\nKomendy administracyjne wymagają odpowiednich uprawnień.')
+    .setColor(0x5865F2);
+  for (const [cat, lines] of Object.entries(grouped)) {
+    embed.addFields({ name: cat, value: lines.join('\n').slice(0, 1000) || '—', inline: false });
+  }
+
+  const names = commands.map(c => c.data.name).sort();
+  const rows = names.length
+    ? [selectMenu({
+        id: customId(MODULE, 'view'),
+        placeholder: 'Zobacz szczegóły komendy…',
+        options: names.slice(0, 25).map(n => ({ label: `/${n}`, value: n }))
+      })]
+    : [];
+  return { content: '', embeds: [embed], components: rows };
+}
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('help')
@@ -65,48 +114,31 @@ module.exports = {
         await interaction.reply({ content: `Command \`${specific}\` not found.`, flags: MessageFlags.Ephemeral });
         return;
       }
-
-      const embed = new EmbedBuilder()
-        .setTitle(`/${cmd.data.name}`)
-        .setDescription(cmd.data.description || 'No description')
-        .setColor(0x5865F2);
-
-      try {
-        const json = cmd.data.toJSON();
-        if (json.options && json.options.length) {
-          const opts = json.options.map(o => {
-            if (o.type === 1) return `• **${o.name}** — ${o.description}`;
-            return `• **${o.name}**${o.required ? '' : ' (optional)'} — ${o.description}`;
-          });
-          embed.addFields({ name: 'Options / Subcommands', value: opts.join('\n').slice(0, 1000) });
-        }
-      } catch {}
-
-      await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+      await interaction.reply({ embeds: [commandDetailEmbed(cmd)], flags: MessageFlags.Ephemeral });
       return;
     }
 
-    // Grouped list
-    const grouped = {};
-    for (const cmd of commands) {
-      const cat = getCategory(cmd.data.name);
-      if (!grouped[cat]) grouped[cat] = [];
-      grouped[cat].push(`**/${cmd.data.name}** — ${cmd.data.description || ''}`);
+    await reply(interaction, groupedPayload(interaction.client));
+  },
+
+  // Central component router (main.js) dispatches here for any customId
+  // prefixed "help:" — see lib/interactions.js and INTERACTIONS.md.
+  async handleComponent(interaction) {
+    const { action } = parseCustomId(interaction.customId);
+
+    if (action === 'view') {
+      const cmd = interaction.client.commands.get(interaction.values[0]);
+      if (!cmd) {
+        await notice(interaction, 'Ta komenda już nie istnieje (moduły mogły zostać przeładowane).');
+        return;
+      }
+      const backRow = buttons([{ id: customId(MODULE, 'back'), label: '⬅ Powrót do listy', style: 'secondary' }]);
+      await updatePanel(interaction, { content: '', embeds: [commandDetailEmbed(cmd)], components: backRow });
+      return;
     }
 
-    const embed = new EmbedBuilder()
-      .setTitle('Universal Discord Bot — Help')
-      .setDescription('Use `/help <command>` for details on a specific command.\nAdmin commands require appropriate permissions.')
-      .setColor(0x5865F2);
-
-    for (const [cat, lines] of Object.entries(grouped)) {
-      embed.addFields({
-        name: cat,
-        value: lines.join('\n').slice(0, 1000) || '—',
-        inline: false
-      });
+    if (action === 'back') {
+      await updatePanel(interaction, groupedPayload(interaction.client));
     }
-
-    await interaction.client.sendWithLimits(interaction, '', { embeds: [embed] });
   }
 };
