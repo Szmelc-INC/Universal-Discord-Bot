@@ -337,6 +337,15 @@ For orientation when reading the diff this document shipped with:
 | `webhooks.js` | `/webhooks list` gets a select menu → detail view → edit (modal) / delete (confirm) / back, all in one message |
 | `image.js`, `joke.js`, `quote.js`, `rng.js`, `crypto.js` | Reroll/refresh button added, editing the same message |
 | `dm.js`, `anon.js` | Message text can be composed in a modal when the slash option is left empty |
+| `ollama.js` | `/ollama ask`'s `prompt` option is now optional — leave it empty to compose in a modal; every answer gets 🔄 Regeneruj (re-ask the same prompt, edits the same message) and 🗑️ Wyczyść historię buttons |
 | `tictactoe.js` | Idle timeout added (collector ran forever otherwise); end-of-game now edits the `Message` directly instead of `interaction.followUp` (which would throw once the 15-minute interaction token expired on a long game); rematch button added |
 
-Everything else was already single-reply and needed no change.
+**Verified but left as-is (reply-standard already correct, no components added):**
+`info.js`, `ping.js`, `file_upload.js`, `dms.js`, `reaction.js`, `responses.js`,
+`reload.js`, `audio.js`, `incwel-69.js`, `role_manager.js`, `rich_presence.js`,
+`shell.js`. None of these had a defer/reply/followUp bug to fix. `shell.js`
+deliberately has no modal — a slash option keeps the command whitelist-
+enforceable for non-admins in a way a free-text modal would blur.
+`rich_presence.js` and `info.js` are reasonable next candidates for a select
+menu / refresh button if a future pass wants to extend coverage further —
+not done here for scope reasons, not because they don't fit.

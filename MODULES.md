@@ -244,7 +244,7 @@ Mention tokens are stripped before the text is used as the user prompt. Empty pr
 
 **Slash commands:**
 - `/ollama status` — Module state, model, server URL, connectivity (`/api/tags`), history/inference summary
-- `/ollama ask <prompt> [private]` — One-shot question (optional ephemeral reply)
+- `/ollama ask [prompt] [private]` — One-shot question (optional ephemeral reply); leave `prompt` empty to compose it in a modal. Every answer gets 🔄 Regeneruj and 🗑️ Wyczyść historię buttons, both editing the same message.
 - `/ollama reload` — Reload `config/ollama.json` from disk (admin)
 - `/ollama clear-history [scope]` — Clear channel or all in-memory history (admin)
 - `/ollama model [name]` — Get/set model name and persist to config (admin)

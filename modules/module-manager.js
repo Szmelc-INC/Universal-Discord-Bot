@@ -15,9 +15,10 @@ function listPayload(client) {
     return `\`${name}\` — ${status}`;
   });
 
+  const overflowNote = all.length > 25 ? `\n\nLista wyboru pokazuje pierwsze 25 z ${all.length} modułów — użyj \`/modules enable|disable <name>\` dla reszty.` : '';
   const embed = new EmbedBuilder()
     .setTitle('Module Status')
-    .setDescription(lines.join('\n').slice(0, 4000) || 'No modules found')
+    .setDescription((lines.join('\n').slice(0, 4000) || 'No modules found') + overflowNote)
     .setColor(0x5865F2);
 
   const rows = all.length

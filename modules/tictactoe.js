@@ -62,6 +62,12 @@ function rematchRow() {
 // spawning a new one. Recurses on rematch instead of starting a fresh message.
 function startGame(message, p1, p2) {
   const game = new TicTacToeGame(p1, p2);
+  // Set synchronously in the same tick as collector.stop(), so 'end' below
+  // never has to guess the outcome from message.content — reading that back
+  // races the in-flight i.update() that's setting it (content wasn't touched
+  // by i.update() yet from 'end's point of view, since Message#edit() only
+  // reflects a completed API round trip, not the update the client just sent).
+  let finalContent = null;
   const collector = message.createMessageComponentCollector({ componentType: ComponentType.Button, idle: IDLE_TIMEOUT });
 
   collector.on('collect', async i => {
@@ -77,12 +83,14 @@ function startGame(message, p1, p2) {
     game.current = game.current.id === p1.id ? p2 : p1;
 
     if (won) {
+      finalContent = `${i.user} wins!`;
       collector.stop('win');
-      return i.update({ content: `${i.user} wins!`, components: game.buttons });
+      return i.update({ content: finalContent, components: game.buttons });
     }
     if (full) {
+      finalContent = "It's a draw!";
       collector.stop('draw');
-      return i.update({ content: "It's a draw!", components: game.buttons });
+      return i.update({ content: finalContent, components: game.buttons });
     }
     await i.update({ components: game.buttons });
   });
@@ -91,10 +99,11 @@ function startGame(message, p1, p2) {
     // Interaction tokens (and therefore followUp/editReply) expire after 15
     // minutes — this game can run far longer than that, so the end-of-game
     // update goes through Message#edit, not the original interaction.
+    const base = finalContent ?? (message.content || 'Tic Tac Toe');
     const suffix = reason === 'idle' ? '\n⌛ Game abandoned (no moves for 10 min).' : '';
     try {
       await message.edit({
-        content: (message.content || 'Tic Tac Toe') + suffix,
+        content: base + suffix,
         components: [...game.buttons, ...rematchRow()]
       });
     } catch { /* message may have been deleted */ }

@@ -233,7 +233,11 @@ async function runCleanup(interaction, job) {
   const { scope, doBackup, targetUser, cutoff } = job;
   const guild = interaction.guild;
   const userIdFilter = targetUser ? targetUser.id : null;
-  const filterFn = (m) => m.createdTimestamp >= cutoff.getTime() && (!userIdFilter || m.author.id === userIdFilter);
+  // Exclude the confirmation/progress panel itself — its timestamp (now) is
+  // inside every cutoff window, so channel/global scopes would otherwise
+  // delete the very message runCleanup is still editing mid-run.
+  const panelMessageId = interaction.message?.id;
+  const filterFn = (m) => m.id !== panelMessageId && m.createdTimestamp >= cutoff.getTime() && (!userIdFilter || m.author.id === userIdFilter);
   let totalDeleted = 0;
   let channelsTouched = 0;
   let errorCount = 0;

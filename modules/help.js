@@ -66,15 +66,16 @@ function groupedPayload(client) {
     grouped[cat].push(`**/${cmd.data.name}** — ${cmd.data.description || ''}`);
   }
 
+  const names = commands.map(c => c.data.name).sort();
+  const overflowNote = names.length > 25 ? `\nLista wyboru pokazuje pierwsze 25 z ${names.length} komend — użyj \`/help <command>\` dla reszty.` : '';
   const embed = new EmbedBuilder()
     .setTitle('Universal Discord Bot — Help')
-    .setDescription('Wybierz komendę z listy poniżej, albo użyj `/help <command>`.\nKomendy administracyjne wymagają odpowiednich uprawnień.')
+    .setDescription(`Wybierz komendę z listy poniżej, albo użyj \`/help <command>\`.\nKomendy administracyjne wymagają odpowiednich uprawnień.${overflowNote}`)
     .setColor(0x5865F2);
   for (const [cat, lines] of Object.entries(grouped)) {
     embed.addFields({ name: cat, value: lines.join('\n').slice(0, 1000) || '—', inline: false });
   }
 
-  const names = commands.map(c => c.data.name).sort();
   const rows = names.length
     ? [selectMenu({
         id: customId(MODULE, 'view'),
