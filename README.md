@@ -90,6 +90,7 @@ If you prefer manual setup:
 ## Documentation
 
 - **[MODULES.md](MODULES.md)** — Complete documentation for all 26+ modules (highly recommended)
+- **[INTERACTIONS.md](INTERACTIONS.md)** — The interaction standard every module follows (single edited message per result, buttons/select menus/modals, `lib/interactions.js`) — read before writing or editing a module's reply logic
 - **[TODO.md](TODO.md)** — Planned features and development roadmap
 
 ## Running Multiple Bots
@@ -168,9 +169,10 @@ Earlier attempts that mounted `.env` or temporarily renamed it to `.env.bak` cau
 ## Contributing
 
 - New modules go into `modules/`
-- Follow the existing pattern (export `{ data, execute }`)
+- Follow the existing pattern (export `{ data, execute }`, and optionally `handleComponent`/`handleModal` — see below)
 - Use `client.isAdmin()` for privileged actions
 - Document new modules in `MODULES.md`
+- Follow the reply/component/modal standard in **[INTERACTIONS.md](INTERACTIONS.md)** — one edited message per result, via the shared helpers in `lib/interactions.js`
 
 ## Status
 

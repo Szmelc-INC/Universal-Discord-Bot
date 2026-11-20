@@ -1,4 +1,9 @@
 const { SlashCommandBuilder } = require('discord.js');
+const { customId, parseCustomId, buttons } = require('../lib/interactions');
+
+const MODULE = 'quote';
+const FETCHERS = { boner: fetchBoner, bomba: fetchBomba, joke: fetchJoke, emoji: fetchEmoji };
+const rerollRow = sub => buttons([{ id: customId(MODULE, 'reroll', sub), label: 'Losuj ponownie', style: 'secondary', emoji: '🔄' }]);
 
 // === BONER (improved selectors + static fallbacks) ===
 const BONER_FALLBACKS = [
@@ -142,13 +147,20 @@ module.exports = {
     .addSubcommand(sc => sc.setName('emoji').setDescription('Random text emoji')),
   async execute(interaction) {
     const sub = interaction.options.getSubcommand();
-    let response;
-    if (sub === 'boner') response = await fetchBoner();
-    else if (sub === 'bomba') response = await fetchBomba();
-    else if (sub === 'joke') response = await fetchJoke();
-    else if (sub === 'emoji') response = await fetchEmoji();
-    else response = 'Unknown type.';
-    await interaction.reply(response || 'No result.');
+    const fetcher = FETCHERS[sub];
+    const response = fetcher ? await fetcher() : null;
+    await interaction.reply({ content: response || 'No result.', components: fetcher ? rerollRow(sub) : [] });
+  },
+
+  // Central component router (main.js) dispatches here for any customId
+  // prefixed "quote:" — see lib/interactions.js and INTERACTIONS.md.
+  async handleComponent(interaction) {
+    const { payload: sub } = parseCustomId(interaction.customId);
+    const fetcher = FETCHERS[sub];
+    if (!fetcher) return;
+    await interaction.deferUpdate();
+    const response = await fetcher();
+    await interaction.editReply({ content: response || 'No result.', components: rerollRow(sub) });
   }
 };
 

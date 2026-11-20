@@ -23,7 +23,19 @@ function saveJSON(file, data) {
   fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 
+function bustLibCache() {
+  // lib/interactions.js (the shared interaction-standard helper) is required
+  // by modules via a resolved absolute path, so it survives module cache
+  // clears untouched. Bust it too so /modules reload actually picks up edits.
+  const libDir = path.join(__dirname, 'lib');
+  if (!fs.existsSync(libDir)) return;
+  for (const file of fs.readdirSync(libDir).filter(f => f.endsWith('.js'))) {
+    delete require.cache[require.resolve(path.join(libDir, file))];
+  }
+}
+
 async function loadModules(modulesFolder, enabled = [], disabled = [], debug = false) {
+  bustLibCache();
   const modules = [];
   const loadedNames = [];
   const failed = [];
@@ -139,7 +151,16 @@ async function startBot(botName, config, tokens, options = {}) {
     });
     if (files.length > maxFiles) files = files.slice(0, maxFiles);
 
-    const send = msg => interaction.reply({ ...rest, content: msg, files });
+    // Defer-aware: lands in the SAME message whether the caller already
+    // deferred/replied or not. See lib/interactions.js `reply()` (this stays
+    // a client method rather than importing that lib to avoid a require
+    // cycle risk for modules that don't need the rest of the standard lib).
+    const send = msg => {
+      const payload = { ...rest, content: msg, files };
+      return (interaction.deferred || interaction.replied)
+        ? interaction.editReply(payload)
+        : interaction.reply(payload);
+    };
 
     if (content.length <= maxLen) {
       await send(content);
@@ -157,8 +178,11 @@ async function startBot(botName, config, tokens, options = {}) {
       }
     } else if (strategy === 'file') {
       const buffer = Buffer.from(content, 'utf8');
+      const filePayload = { ...rest, content: undefined, files: [{ attachment: buffer, name: 'message.txt' }] };
       if (buffer.length <= maxFileSize) {
-        await interaction.reply({ ...rest, files: [{ attachment: buffer, name: 'message.txt' }] });
+        await ((interaction.deferred || interaction.replied)
+          ? interaction.editReply(filePayload)
+          : interaction.reply(filePayload));
       } else {
         await send(content.slice(0, maxLen));
       }
@@ -329,6 +353,31 @@ async function startBot(botName, config, tokens, options = {}) {
       if (cmd && cmd.autocomplete) {
         try { await cmd.autocomplete(interaction); }
         catch (e) { console.error(e); }
+      }
+    } else if (
+      interaction.isButton() ||
+      interaction.isStringSelectMenu() ||
+      interaction.isUserSelectMenu() ||
+      interaction.isRoleSelectMenu() ||
+      interaction.isChannelSelectMenu() ||
+      interaction.isMentionableSelectMenu() ||
+      interaction.isModalSubmit()
+    ) {
+      // Standard interaction-component routing. customId convention is
+      // "modname:action:payload" (see lib/interactions.js customId()).
+      // Modules opt in by exporting handleComponent(interaction) and/or
+      // handleModal(interaction) alongside { data, execute }. Modules that
+      // only ever bind short-lived collectors (message.createMessageComponentCollector,
+      // e.g. tictactoe) never reach here — the collector claims the event first.
+      const { modName } = require('./lib/interactions').parseCustomId(interaction.customId);
+      const cmd = client.commands.get(modName);
+      if (!cmd) return;
+      if (!client.isModuleEnabled(modName)) return;
+      try {
+        if (interaction.isModalSubmit() && cmd.handleModal) await cmd.handleModal(interaction);
+        else if (!interaction.isModalSubmit() && cmd.handleComponent) await cmd.handleComponent(interaction);
+      } catch (e) {
+        console.error(`[interactionCreate] component/modal handler error (${modName}):`, e);
       }
     }
   });

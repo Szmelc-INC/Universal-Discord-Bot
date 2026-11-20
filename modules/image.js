@@ -1,4 +1,8 @@
-const { SlashCommandBuilder, EmbedBuilder, MessageFlags } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
+const { customId, parseCustomId, buttons } = require('../lib/interactions');
+
+const MODULE = 'image';
+const rerollRow = sub => buttons([{ id: customId(MODULE, 'reroll', sub), label: 'Losuj ponownie', style: 'secondary', emoji: '🔄' }]);
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
@@ -82,6 +86,22 @@ async function fetchCycki() {
   return null;
 }
 
+async function losowePayload() {
+  const { url, title } = await fetchMeme();
+  if (!url) return { content: 'Unable to fetch a meme right now (sites may block or change).', embeds: [], components: [] };
+  const embed = new EmbedBuilder().setTitle(title);
+  if (/\.(mp4|webm)$/i.test(url)) embed.setDescription(`[Video/GIF](${url})`);
+  else embed.setImage(url);
+  return { content: '', embeds: [embed], components: rerollRow('losowe') };
+}
+
+async function cyckiPayload() {
+  const url = await fetchCycki();
+  if (!url) return { content: 'Unable to fetch image (site may have changed).', embeds: [], components: [] };
+  const embed = new EmbedBuilder().setTitle('Losowe Witajki').setImage(url);
+  return { content: '', embeds: [embed], components: rerollRow('cycki') };
+}
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('image')
@@ -91,29 +111,20 @@ module.exports = {
   async execute(interaction) {
     const sub = interaction.options.getSubcommand();
     if (sub === 'losowe') {
-      const { url, title } = await fetchMeme();
-      if (!url) {
-        await interaction.reply({ content: 'Unable to fetch a meme right now (sites may block or change).', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      const embed = new EmbedBuilder().setTitle(title);
-      if (/\.(mp4|webm)$/i.test(url)) {
-        embed.setDescription(`[Video/GIF](${url})`);
-      } else {
-        embed.setImage(url);
-      }
-      await interaction.reply({ embeds: [embed] });
+      await interaction.reply(await losowePayload());
     } else if (sub === 'cycki') {
-      const url = await fetchCycki();
-      if (!url) {
-        await interaction.reply({ content: 'Unable to fetch image (site may have changed).', flags: MessageFlags.Ephemeral });
-        return;
-      }
-      const embed = new EmbedBuilder().setTitle('Losowe Witajki').setImage(url);
-      await interaction.reply({ embeds: [embed] });
+      await interaction.reply(await cyckiPayload());
     } else {
       await interaction.reply('Unknown subcommand.');
     }
+  },
+
+  // Central component router (main.js) dispatches here for any customId
+  // prefixed "image:" — see lib/interactions.js and INTERACTIONS.md.
+  async handleComponent(interaction) {
+    const { payload } = parseCustomId(interaction.customId);
+    await interaction.deferUpdate();
+    await interaction.editReply(payload === 'cycki' ? await cyckiPayload() : await losowePayload());
   }
 };
 

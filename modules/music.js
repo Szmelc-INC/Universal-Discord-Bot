@@ -11,7 +11,9 @@ const {
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { customId, parseCustomId, reply, panel, updatePanel, notice, buttons } = require('../lib/interactions');
 
+const MODULE = 'music';
 const COOKIES_FILE = path.join(__dirname, '..', 'cookies.txt');
 
 // How long to wait for the voice connection to actually become Ready (UDP/RTP up).
@@ -28,9 +30,75 @@ function getState(guildId) {
       connection: null,
       isPlaying: false,
       currentProcess: null, // the yt-dlp child currently feeding the audio resource
+      currentTrack: null,
+      panelMessage: null, // the persistent "now playing" control panel, edited in place
     });
   }
   return musicStates.get(guildId);
+}
+
+// One control panel per guild: buttons mutate the SAME message (Message#edit,
+// not a token-bound editReply — the panel must outlive the 15-min interaction
+// window since tracks can play for hours). See INTERACTIONS.md "long-lived panels".
+function panelPayload(guildId) {
+  const state = getState(guildId);
+  const status = state.player?.state?.status;
+  const lines = state.currentTrack
+    ? [`${status === AudioPlayerStatus.Paused ? '⏸️' : '▶️'} **${state.currentTrack.title || state.currentTrack.url}**`]
+    : ['⏹️ Nic nie jest odtwarzane.'];
+  if (state.queue.length) lines.push(`📜 W kolejce: ${state.queue.length}`);
+
+  const rows = buttons([
+    { id: customId(MODULE, 'pause'), label: 'Pauza', style: 'secondary', emoji: '⏸️', disabled: status !== AudioPlayerStatus.Playing },
+    { id: customId(MODULE, 'resume'), label: 'Wznów', style: 'secondary', emoji: '▶️', disabled: status !== AudioPlayerStatus.Paused },
+    { id: customId(MODULE, 'skip'), label: 'Pomiń', style: 'primary', emoji: '⏭️', disabled: !state.isPlaying },
+    { id: customId(MODULE, 'stop'), label: 'Stop', style: 'danger', emoji: '⏹️', disabled: !state.isPlaying && state.queue.length === 0 },
+    { id: customId(MODULE, 'queue'), label: 'Kolejka', style: 'secondary', emoji: '📜' }
+  ]);
+  return { content: lines.join('\n'), components: rows };
+}
+
+async function syncPanel(guildId) {
+  const state = getState(guildId);
+  if (state.panelMessage) await state.panelMessage.edit(panelPayload(guildId)).catch(() => {});
+}
+
+function doPause(guildId) {
+  const state = getState(guildId);
+  if (state.player && state.player.state.status === AudioPlayerStatus.Playing) {
+    state.player.pause();
+    return { ok: true };
+  }
+  return { ok: false, reason: 'Nothing is playing.' };
+}
+
+function doResume(guildId) {
+  const state = getState(guildId);
+  if (state.player && state.player.state.status === AudioPlayerStatus.Paused) {
+    state.player.unpause();
+    return { ok: true };
+  }
+  return { ok: false, reason: 'Nothing is paused.' };
+}
+
+function doStop(guildId) {
+  const state = getState(guildId);
+  killStream(state);
+  if (state.player) state.player.stop(true);
+  state.queue = [];
+  state.isPlaying = false;
+  state.currentTrack = null;
+  return { ok: true };
+}
+
+function doSkip(guildId) {
+  const state = getState(guildId);
+  if (state.player && state.isPlaying) {
+    killStream(state);
+    state.player.stop(true); // playNext is triggered by the resulting Idle event
+    return { ok: true };
+  }
+  return { ok: false, reason: 'Nothing is playing.' };
 }
 
 // Kill the yt-dlp process that is currently streaming, if any.
@@ -70,10 +138,9 @@ async function playNext(guildId, interaction) {
   const state = getState(guildId);
   if (state.queue.length === 0) {
     state.isPlaying = false;
-    if (interaction) {
-      await interaction.followUp({ content: 'Queue is empty. Playback stopped.' })
-        .catch(e => console.error('[music] followUp failed:', e.message));
-    }
+    state.currentTrack = null;
+    if (interaction) await reply(interaction, panelPayload(guildId));
+    else await syncPanel(guildId);
     return;
   }
 
@@ -82,7 +149,7 @@ async function playNext(guildId, interaction) {
   // but no packets ever leave (classic UDP-not-ready / NAT / Docker port issue).
   if (!state.connection) {
     console.error('[music] playNext called without a voice connection');
-    if (interaction) await interaction.followUp({ content: 'Not connected to a voice channel. Use `/music join` first.' }).catch(() => {});
+    if (interaction) await reply(interaction, 'Not connected to a voice channel. Use `/music join` first.');
     return;
   }
   if (state.connection.state.status !== VoiceConnectionStatus.Ready) {
@@ -92,10 +159,8 @@ async function playNext(guildId, interaction) {
     } catch (e) {
       console.error('[music] Voice connection never reached Ready:', e.message);
       if (interaction) {
-        await interaction.followUp({
-          content: '⚠️ Could not establish the voice connection (never reached **Ready**). '
-            + 'This is usually a network/UDP issue — if the bot runs in Docker, make sure outbound UDP is not blocked.',
-        }).catch(() => {});
+        await reply(interaction, '⚠️ Could not establish the voice connection (never reached **Ready**). '
+          + 'This is usually a network/UDP issue — if the bot runs in Docker, make sure outbound UDP is not blocked.');
       }
       return;
     }
@@ -105,6 +170,7 @@ async function playNext(guildId, interaction) {
   killStream(state);
 
   const nextItem = state.queue.shift();
+  state.currentTrack = nextItem;
 
   const child = spawnYtdlpStream(nextItem.url);
   state.currentProcess = child;
@@ -121,9 +187,7 @@ async function playNext(guildId, interaction) {
   });
   child.on('error', e => {
     console.error('[music] yt-dlp spawn error:', e.message);
-    if (interaction) {
-      interaction.followUp({ content: `⚠️ Could not start playback (is \`yt-dlp\` installed?): ${e.message}` }).catch(() => {});
-    }
+    if (interaction) reply(interaction, `⚠️ Could not start playback (is \`yt-dlp\` installed?): ${e.message}`).catch(() => {});
   });
   child.on('close', code => {
     if (state.currentProcess === child) state.currentProcess = null;
@@ -132,10 +196,8 @@ async function playNext(guildId, interaction) {
     if (code && code !== 0 && !gotData) {
       console.error(`[music] yt-dlp exited ${code} with no audio for "${nextItem.title || nextItem.url}": ${stderrTail.trim()}`);
       if (interaction) {
-        interaction.followUp({
-          content: `⚠️ Could not play **${nextItem.title || nextItem.url}** — yt-dlp failed to fetch the audio `
-            + '(the video may be private, age-restricted, region-locked, or removed).',
-        }).catch(() => {});
+        reply(interaction, `⚠️ Could not play **${nextItem.title || nextItem.url}** — yt-dlp failed to fetch the audio `
+          + '(the video may be private, age-restricted, region-locked, or removed).').catch(() => {});
       }
     }
   });
@@ -148,9 +210,16 @@ async function playNext(guildId, interaction) {
   state.player.play(resource);
   state.isPlaying = true;
 
+  // The control panel is the ONE message for this guild's player: created on
+  // the first track (from the command interaction) and edited in place for
+  // every subsequent track/state change, instead of a new message each time.
   if (interaction) {
-    await interaction.followUp({ content: `▶️ Now playing: **${nextItem.title || nextItem.url}**` })
-      .catch(e => console.error('[music] followUp failed:', e.message));
+    state.panelMessage = await panel(interaction, panelPayload(guildId)).catch(e => {
+      console.error('[music] panel creation failed:', e.message);
+      return state.panelMessage;
+    });
+  } else {
+    await syncPanel(guildId);
   }
 }
 
@@ -286,6 +355,7 @@ module.exports = {
       if (connection) {
         killStream(state);
         try { connection.destroy(); } catch {}
+        if (state.panelMessage) await state.panelMessage.edit({ content: '👋 Bot opuścił kanał głosowy.', components: [] }).catch(() => {});
         musicStates.delete(guildId);
         await interaction.reply('Left the voice channel.');
       } else {
@@ -341,56 +411,68 @@ module.exports = {
     }
 
     if (sub === 'pause') {
-      if (state.player && state.player.state.status === AudioPlayerStatus.Playing) {
-        state.player.pause();
-        await interaction.reply('Paused.');
-      } else {
-        await interaction.reply({ content: 'Nothing is playing.', flags: MessageFlags.Ephemeral });
-      }
+      const r = doPause(guildId);
+      await interaction.reply({ content: r.ok ? 'Paused.' : r.reason, flags: r.ok ? undefined : MessageFlags.Ephemeral });
+      if (r.ok) await syncPanel(guildId);
       return;
     }
 
     if (sub === 'resume') {
-      if (state.player && state.player.state.status === AudioPlayerStatus.Paused) {
-        state.player.unpause();
-        await interaction.reply('Resumed.');
-      } else {
-        await interaction.reply({ content: 'Nothing is paused.', flags: MessageFlags.Ephemeral });
-      }
+      const r = doResume(guildId);
+      await interaction.reply({ content: r.ok ? 'Resumed.' : r.reason, flags: r.ok ? undefined : MessageFlags.Ephemeral });
+      if (r.ok) await syncPanel(guildId);
       return;
     }
 
     if (sub === 'stop') {
-      killStream(state);
-      if (state.player) {
-        state.player.stop(true);
-      }
-      state.queue = [];
-      state.isPlaying = false;
+      doStop(guildId);
       await interaction.reply('Stopped and cleared the queue.');
+      await syncPanel(guildId);
       return;
     }
 
     if (sub === 'skip') {
-      if (state.player && state.isPlaying) {
-        killStream(state);
-        state.player.stop(true);
-        await interaction.reply('Skipped current track.');
-        // playNext will be triggered by the Idle event
-      } else {
-        await interaction.reply({ content: 'Nothing is playing.', flags: MessageFlags.Ephemeral });
-      }
+      const r = doSkip(guildId);
+      await interaction.reply({ content: r.ok ? 'Skipped current track.' : r.reason, flags: r.ok ? undefined : MessageFlags.Ephemeral });
+      // playNext (triggered by the resulting Idle event) syncs the panel once the next track starts.
       return;
     }
 
     if (sub === 'queue') {
-      if (state.queue.length === 0) {
-        await interaction.reply('The queue is empty.');
-      } else {
-        const list = state.queue.slice(0, 10).map((item, i) => `${i + 1}. ${item.title || item.url}`).join('\n');
-        await interaction.reply(`**Current Queue:**\n${list}${state.queue.length > 10 ? `\n...and ${state.queue.length - 10} more` : ''}`);
-      }
+      await interaction.reply({ content: queueListText(state), flags: MessageFlags.Ephemeral });
       return;
     }
+  },
+
+  // Central component router (main.js) dispatches here for any customId
+  // prefixed "music:" — see lib/interactions.js and INTERACTIONS.md.
+  async handleComponent(interaction) {
+    const { action } = parseCustomId(interaction.customId);
+    const guildId = interaction.guildId;
+    const state = getState(guildId);
+
+    if (action === 'queue') {
+      await notice(interaction, queueListText(state));
+      return;
+    }
+
+    const handlers = { pause: doPause, resume: doResume, stop: doStop, skip: doSkip };
+    const handler = handlers[action];
+    if (!handler) return;
+
+    const r = handler(guildId);
+    if (!r.ok) {
+      await notice(interaction, r.reason);
+      return;
+    }
+    // Button click IS the panel update — acknowledges the interaction and
+    // mutates the same message in one step (interaction.update() under the hood).
+    await updatePanel(interaction, panelPayload(guildId));
   }
 };
+
+function queueListText(state) {
+  if (state.queue.length === 0) return 'The queue is empty.';
+  const list = state.queue.slice(0, 10).map((item, i) => `${i + 1}. ${item.title || item.url}`).join('\n');
+  return `**Current Queue:**\n${list}${state.queue.length > 10 ? `\n...and ${state.queue.length - 10} more` : ''}`;
+}

@@ -1,4 +1,8 @@
 const { SlashCommandBuilder } = require('discord.js');
+const { customId, parseCustomId, buttons } = require('../lib/interactions');
+
+const MODULE = 'joke';
+const rerollRow = type => buttons([{ id: customId(MODULE, 'reroll', type), label: 'Kolejny żart', style: 'secondary', emoji: '🔄' }]);
 
 async function getDadJoke() {
   try {
@@ -37,6 +41,15 @@ module.exports = {
   async execute(interaction) {
     const type = interaction.options.getString('type') || 'dad';
     const text = type === 'pun' ? await getOfficialJoke() : await getDadJoke();
-    await interaction.client.sendWithLimits(interaction, text);
+    await interaction.client.sendWithLimits(interaction, text, { components: rerollRow(type) });
+  },
+
+  // Central component router (main.js) dispatches here for any customId
+  // prefixed "joke:" — see lib/interactions.js and INTERACTIONS.md.
+  async handleComponent(interaction) {
+    const { payload: type } = parseCustomId(interaction.customId);
+    await interaction.deferUpdate();
+    const text = type === 'pun' ? await getOfficialJoke() : await getDadJoke();
+    await interaction.editReply({ content: text, components: rerollRow(type) });
   }
 };

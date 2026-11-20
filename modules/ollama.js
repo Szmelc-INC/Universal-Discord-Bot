@@ -1,6 +1,23 @@
 const { SlashCommandBuilder, EmbedBuilder, MessageFlags } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
+const { customId, parseCustomId, showModal, buttons } = require('../lib/interactions');
+
+const MODULE = 'ollama';
+// messageId -> the prompt/ephemeral behind a reply, so 🔄 Regeneruj can re-ask
+// without a slash-option round trip. Small and short-lived on purpose.
+const askCache = new Map();
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, e] of askCache) if (e.expiresAt < now) askCache.delete(id);
+}, 60_000).unref();
+
+function askRow() {
+  return buttons([
+    { id: customId(MODULE, 'regen'), label: 'Regeneruj', style: 'secondary', emoji: '🔄' },
+    { id: customId(MODULE, 'clearhist'), label: 'Wyczyść historię kanału', style: 'danger', emoji: '🗑️' }
+  ]);
+}
 
 /** Primary config — ALWAYS modules/../config/ollama.json (never cwd-relative). */
 const CONFIG_FILENAME = 'ollama.json';
@@ -980,7 +997,7 @@ module.exports = {
         .setName('ask')
         .setDescription('Ask the local AI a one-shot question (does not require a mention)')
         .addStringOption(o =>
-          o.setName('prompt').setDescription('Your question or prompt').setRequired(true)
+          o.setName('prompt').setDescription('Your question or prompt — leave empty to compose it in a modal').setRequired(false)
         )
         .addBooleanOption(o =>
           o.setName('private').setDescription('Reply ephemerally (only you see it)').setRequired(false)
@@ -1157,51 +1174,102 @@ module.exports = {
     }
 
     if (sub === 'ask') {
-      const prompt = interaction.options.getString('prompt');
+      const promptOpt = interaction.options.getString('prompt');
       const ephemeral = interaction.options.getBoolean('private') || false;
-      const c = getCfg();
+
+      if (!promptOpt) {
+        // No prompt option given: compose it in a modal (longer text, real
+        // newlines). showModal() must be the FIRST response to this
+        // interaction — execute() hasn't replied yet at this point.
+        const modalSubmit = await showModal(interaction, {
+          id: customId(MODULE, 'askmodal'),
+          title: 'Zapytaj AI',
+          fields: [{ id: 'prompt', label: 'Twoje pytanie / prompt', style: 'paragraph', required: true, maxLength: 2000 }]
+        });
+        if (!modalSubmit) return; // timed out
+        await modalSubmit.deferReply({ flags: ephemeral ? MessageFlags.Ephemeral : undefined });
+        await runAsk(modalSubmit, modalSubmit.fields.getTextInputValue('prompt'), ephemeral);
+        return;
+      }
 
       await interaction.deferReply({ flags: ephemeral ? MessageFlags.Ephemeral : undefined });
-
-      try {
-        // One-shot: optional light history from channel if history enabled
-        let history = [];
-        if (c.history?.enabled && interaction.channelId) {
-          const key = `ch:${interaction.channelId}`;
-          history = getHistoryMessages(key);
-        }
-
-        const replyText = await callOllama(prompt, history);
-        if (!replyText) {
-          await interaction.editReply(c.response?.errorMessage || 'Empty response from model.');
-          return;
-        }
-
-        if (c.history?.enabled && interaction.channelId) {
-          const key = `ch:${interaction.channelId}`;
-          pushHistory(key, 'user', prompt);
-          pushHistory(key, 'assistant', replyText);
-        }
-
-        const maxPer = Math.min(c.response?.maxCharsPerMessage ?? DISCORD_HARD_LIMIT, DISCORD_HARD_LIMIT);
-        const maxTotal = c.response?.maxTotalChars ?? 8000;
-        let body = applyAffixes(replyText);
-        if (body.length > maxTotal) body = body.slice(0, maxTotal - 20) + '\n…(truncated)';
-
-        const chunks = splitMessage(body, maxPer);
-        await interaction.editReply({ content: chunks[0], allowedMentions: getAllowedMentions() });
-        for (let i = 1; i < chunks.length; i++) {
-          await interaction.followUp({
-            content: chunks[i],
-            flags: ephemeral ? MessageFlags.Ephemeral : undefined,
-            allowedMentions: getAllowedMentions()
-          });
-        }
-      } catch (e) {
-        console.error('[ollama] /ask error:', e.message);
-        await interaction.editReply(c.response?.errorMessage || `Error: ${e.message}`);
-      }
+      await runAsk(interaction, promptOpt, ephemeral);
       return;
+    }
+  },
+
+  // Central component router (main.js) dispatches here for any customId
+  // prefixed "ollama:" — see lib/interactions.js and INTERACTIONS.md.
+  async handleComponent(interaction) {
+    const { action } = parseCustomId(interaction.customId);
+
+    if (action === 'regen') {
+      const entry = askCache.get(interaction.message.id);
+      if (!entry) {
+        await interaction.reply({ content: '⌛ Ten kontekst wygasł — użyj `/ollama ask` ponownie.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      await interaction.deferUpdate();
+      await runAsk(interaction, entry.prompt, entry.ephemeral);
+      return;
+    }
+
+    if (action === 'clearhist') {
+      if (!interaction.client.isAdmin(interaction.member || interaction.user)) {
+        await interaction.reply({ content: 'Admin only.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      clearHistory(`ch:${interaction.channelId}`);
+      await interaction.reply({ content: '🗑️ Historia tego kanału wyczyszczona.', flags: MessageFlags.Ephemeral });
     }
   }
 };
+
+// Runs one ask/regenerate turn on an already-deferred interaction (slash
+// command, modal submit, or a component interaction after deferUpdate()) and
+// edits its reply in place — including the follow-up chunks Discord forces
+// on content over 2000 chars (see INTERACTIONS.md §1, the one legitimate
+// followUp case). Caches {prompt, ephemeral} on the resulting message id so
+// the 🔄 Regeneruj button can re-ask without needing the original prompt text
+// in its customId (which is capped at 100 chars).
+async function runAsk(interaction, prompt, ephemeral) {
+  const c = getCfg();
+  try {
+    let history = [];
+    if (c.history?.enabled && interaction.channelId) {
+      history = getHistoryMessages(`ch:${interaction.channelId}`);
+    }
+
+    const replyText = await callOllama(prompt, history);
+    if (!replyText) {
+      await interaction.editReply(c.response?.errorMessage || 'Empty response from model.');
+      return;
+    }
+
+    if (c.history?.enabled && interaction.channelId) {
+      const key = `ch:${interaction.channelId}`;
+      pushHistory(key, 'user', prompt);
+      pushHistory(key, 'assistant', replyText);
+    }
+
+    const maxPer = Math.min(c.response?.maxCharsPerMessage ?? DISCORD_HARD_LIMIT, DISCORD_HARD_LIMIT);
+    const maxTotal = c.response?.maxTotalChars ?? 8000;
+    let body = applyAffixes(replyText);
+    if (body.length > maxTotal) body = body.slice(0, maxTotal - 20) + '\n…(truncated)';
+
+    const chunks = splitMessage(body, maxPer);
+    const msg = await interaction.editReply({ content: chunks[0], components: askRow(), allowedMentions: getAllowedMentions() });
+    for (let i = 1; i < chunks.length; i++) {
+      await interaction.followUp({
+        content: chunks[i],
+        flags: ephemeral ? MessageFlags.Ephemeral : undefined,
+        allowedMentions: getAllowedMentions()
+      });
+    }
+
+    if (msg?.id) askCache.set(msg.id, { prompt, ephemeral, expiresAt: Date.now() + 15 * 60_000 });
+  } catch (e) {
+    console.error('[ollama] ask error:', e.message);
+    await interaction.editReply(c.response?.errorMessage || `Error: ${e.message}`);
+  }
+}
